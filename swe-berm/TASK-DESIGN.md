@@ -200,6 +200,15 @@ that's deterministic) plus any regression tests the author adds. A patch
 that implements the feature but breaks unrelated behavior fails. Real
 contributions don't get to break the build.
 
+The triage rule: regression failures are judged against what the prompt
+*permitted*. A symptom-describing prompt can't enumerate every observable
+side effect, so "unrelated" is a judgment call — a failure that follows
+from a reasonable reading of the task (an output string the prompt asked
+to change that a snapshot test pins) is a bad test, not a bad patch. And
+baseline first: any test that already fails on the base state is excluded
+from the blocker set — one flaky pre-existing test must not zero a
+perfect run.
+
 ### Determinism requirements (hard)
 
 - Run the verifier **three times** during authoring. Any variance → the
@@ -220,6 +229,19 @@ name + status). This is how you catch **gaming by omission**: an agent
 that deletes tests, monkey-patches the framework, or forces an early exit
 shows up as *missing* results, not passes. Aggregate pass/fail alone is
 gameable; a per-test ledger is not.
+
+### Tag operational failures separately
+
+A zero score has two very different causes: *capability failure* (produced
+a solution; the tests failed) and *operational failure* (never produced
+one — cost cap, crash, or with patch-based grading the dominant one:
+**the patch doesn't apply or doesn't build**). A per-test ledger folds
+both into "0% passed" unless the verifier emits a distinct outcome
+category — `no_patch`, `apply_failed`, `build_failed` — that never counts
+as a capability zero. Without the tag, harness bugs masquerade as model
+failures and unreliable configs look worse than they are. (This was an
+open question in the old benchmark's scorer; with patch-extraction
+grading it stops being optional.)
 
 ### Tiers
 
@@ -252,7 +274,11 @@ Two FrontierCode mechanisms worth adopting where they fit:
 
 - **Reverse-classical check**: if the agent is expected to write tests,
   run *their* tests against the base (broken) codebase — they must fail.
-  A test that passes against the broken code tests nothing.
+  A test that passes against the broken code tests nothing. Caveat:
+  distinguish *behavioral* failure from *compile/parse* failure — a test
+  referencing a symbol that doesn't exist on the base commit fails for
+  the wrong reason. The check is only valid when the failure is the
+  missing behavior itself.
 - **Scope check**: automated diff constraints (files allowed/denied, size
   limits). Restraint is part of the task.
 
@@ -266,11 +292,16 @@ Two FrontierCode mechanisms worth adopting where they fit:
   commit, **all future history deleted** (v1.1's "natural git environment"
   — agents work on main and branch normally, but there is no gold commit
   to find).
-- **No gold anywhere.** Not in git history, not in a `reference/` dir in
-  the image, not in file comments. SWE-bench Pro's most embarrassing
-  failure mode: agents ran `git log --all` / `git show <hash>` and pasted
-  the merged fix. 87% of Claude's flagged cheats were exactly this. Our
-  defense is structural: there is no gold to find.
+- **No gold anywhere — including prose.** Not in git history, not in a
+  `reference/` dir in the image, not in file comments. And for tasks
+  derived from real sessions, check the *documents*: AGENTS.md files,
+  READMEs, design docs, TODO comments and changelogs routinely describe
+  the intended fix in words ("model-thinking should own thinking
+  levels"). **Grep the base state for the fix's keywords before
+  shipping.** SWE-bench Pro's most embarrassing failure mode: agents ran
+  `git log --all` / `git show <hash>` and pasted the merged fix. 87% of
+  Claude's flagged cheats were exactly this. Our defense is structural:
+  there is no gold to find.
 - **Pre-install everything.** No network means `bun install` /
   `cargo build` can't fetch — `node_modules`, cargo registries, apt
   packages are baked in at image build time. Test the image with
@@ -438,6 +469,11 @@ because it's *load-bearing*: each one exists to make a single score true.
   half the task; without it you're rewarding agents that burn the repo to
   ship the feature.
 
+**Throughput.** A personal benchmark needs 5–10 tasks to compare models
+meaningfully — fewer and one task's idiosyncrasies dominate the ranking.
+With the relaxed pipeline, budget ~1–3 hours per task; the verifier is
+most of it. Ten good tasks beat thirty unreviewed ones.
+
 ## 11. Checklist for a new task
 
 - [ ] One capability, discoverable from real work (session/issue/standard)
@@ -448,10 +484,14 @@ because it's *load-bearing*: each one exists to make a single score true.
       requirement
 - [ ] Multi-part requirements stated explicitly (they're a feature)
 - [ ] Environment: base state reproducible, shallow git with no future
-      history, everything vendored, works with `no-network`, no gold anywhere
+      history, everything vendored, works with `no-network`, no gold
+      anywhere — grep the base state for the fix's keywords (prose leaks
+      too: AGENTS.md, TODOs, changelogs)
 - [ ] Verifier: behavioral (public interfaces only), bijective with the
-      prompt, regression suite included, deterministic across 3 runs,
-      per-test structured report, tiers with adversarial cases
+      prompt, regression suite included (base-state failures excluded),
+      deterministic across 3 runs, per-test structured report with
+      operational outcomes (`no_patch`/`apply_failed`/`build_failed`)
+      tagged apart from capability zeros, tiers with adversarial cases
 - [ ] Reverse check: verifier fails on the base state
 - [ ] Hack report: adversarial solution fails; alternative-structure
       solution passes
