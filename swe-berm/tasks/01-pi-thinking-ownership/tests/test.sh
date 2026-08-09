@@ -94,6 +94,32 @@ cp /tests/hidden/model-thinking.test.ts /app/pi-packages/bermudis-pi-goodies/mod
 cp /tests/hidden/model-policy.test.ts /app/pi-packages/bermudis-pi-goodies/model-policy.test.ts
 cp /tests/hidden/readme-check.test.ts /app/pi-packages/bermudis-pi-goodies/readme-check.test.ts
 
+# Restore the regression suites to their base state. The agent's patch may
+# have weakened or deleted them to dodge failures; the contract is the
+# pristine suite, so the graded run always uses it. (Deletions are neutralized
+# here too — the file comes back and the suite still enforces the contract.)
+log "restoring regression suites from base"
+if ! run_log git checkout base -- \
+  pi-packages/bermudis-pi-goodies/kilo.test.ts \
+  pi-packages/bermudis-pi-goodies/prefer-tools.test.ts \
+  pi-packages/bermudis-pi-goodies/tps.test.ts \
+  pi-packages/bermudis-pi-goodies/provider-balance.test.ts; then
+  log "regression restore failed -> verifier_error"
+  cat > /logs/verifier/reward.json <<'JSON'
+{"reward":0,"outcome":"verifier_error","reason":"could not restore regression suites from base tag"}
+JSON
+  echo 0 > /logs/verifier/reward.txt
+  cat > /logs/verifier/ctrf.json <<'JSON'
+{"results":{"summary":{"total":0,"passed":0,"failed":0},"tests":[]}}
+JSON
+  exit 0
+fi
+
+# A patch could smuggle a bunfig.toml that preloads a test monkey-patch (bun
+# test auto-loads bunfig). The base has none; remove any the agent added so
+# the graded run uses stock bun behavior.
+find /app -name bunfig.toml -delete 2>/dev/null || true
+
 # --- 4. Run tests with per-test reporting ---
 # bun's junit reporter produces XML; score.py converts it to CTRF + reward.
 # provider-balance.test.ts is included: its cache test uses a fixture key that

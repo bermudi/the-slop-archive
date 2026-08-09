@@ -105,7 +105,12 @@ Validated (dry-run in /tmp, no Docker):
 - Calibration record: listener-only fix = 0, minimal ownership split = 50,
   gold−reset-persist = 87, gold−legacy-warning = 94, gold−docs = 90,
   alternative structure (no shared json-file.ts) = 100, disabled
-  fixed-defaults = `invalid` (preservation gate).
+  fixed-defaults = `invalid` (preservation gate). Regression-suite attacks
+  are neutralized: the verifier restores kilo/prefer-tools/tps/
+  provider-balance tests from the `base` tag before running, so weakened or
+  deleted regression tests can't hide breakage (weaken-attack → build/invalid,
+  delete-attack → neutralized, score reflects capability only); a smuggled
+  `bunfig.toml` is deleted before the run.
 - No prose gold in the sandbox (base `grep` for fix keywords is clean).
 - Docker daemon was unavailable during this pass — `harbor run` still
   needs a final smoke test once dockerd is up.

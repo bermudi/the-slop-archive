@@ -43,7 +43,9 @@ def write_reports(reward: dict, ctrf: dict) -> None:
         out = Path("/tmp/verifier")
         out.mkdir(parents=True, exist_ok=True)
     (out / "reward.json").write_text(json.dumps(reward, indent=2))
-    (out / "reward.txt").write_text(str(reward.get("score", 0)))
+    # reward.txt carries the normalized 0..1 reward (matching the old binary
+    # convention); the integer capability score lives in reward.json["score"].
+    (out / "reward.txt").write_text(str(reward.get("reward", 0)))
     (out / "ctrf.json").write_text(json.dumps(ctrf, indent=2))
 
 
