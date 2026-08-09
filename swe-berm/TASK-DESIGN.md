@@ -18,7 +18,7 @@ exists to convince strangers; keep anything that makes a single score true.
   self-audits ("hack reports"), rubric calibration
 
 Plus hard-won lessons from this repo's own legacy runs (on the `legacy`
-branch) and from building Task 01.
+branch).
 
 ---
 
@@ -59,21 +59,20 @@ is wrong by definition.
 1. **Determinism over realism.** No wall-clock dependencies, no live
    network, no platform-specific behavior. If a test can pass or fail
    depending on *when* it runs or *what state the host is in*, it is not a
-   test — it is a coin flip. (We have a live example of this sin in our own
-   codebase: a cache-TTL test that reads the developer's real
-   `~/.pi/agent/cache/provider-balance.json` and passes or fails depending
-   on whether pi refreshed the cache in the last 30 minutes. It flipped
-   while we were watching. Never do this.)
+   test — it is a coin flip. (We have a live example of this sin: a
+   cache-TTL test that reads the developer's real cache file and passes or
+   fails depending on whether the app refreshed it in the last 30 minutes.
+   It flipped while we were watching. Never do this.)
 2. **One capability per task.** Failure must not compound across tasks. If
-   a task needs a primitive another task covers (compression, parsing), the
-   environment provides a trusted version.
+   a task needs a primitive another task covers, the environment provides a
+   trusted version.
 3. **Grade observable behavior, never implementation.** The verifier
    accepts any solution whose externally visible behavior is correct —
    different module boundaries, helper names, control flow, all fine.
 4. **The agent cannot reach the answer.** No reference solution in the
    sandbox. No gold patch in git history. No held-out test files.
 5. **Novel, not recalled.** Tasks are written from scratch or derived from
-   private context (like our pi session transcripts) that no model has
+   private context (your own sessions, private repos) that no model has
    trained on. Never adapt an existing public PR/commit — the solution is
    already online.
 
@@ -87,13 +86,12 @@ The best task sources, in order:
 
 1. **Real engineering sessions** — work someone (or an agent) actually did:
    a refactor to eliminate dual ownership, a migration, a bug with a subtle
-   root cause. Our Task 01 comes from a pi session where a real diagnosis
-   ("two modules both own thinking level") led to a real fix.
+   root cause.
 2. **Unresolved issues in active repos** — motivated by a real GitHub issue,
    but the fix is written fresh (DeepSWE's model).
 3. **Last resort: synthetic** — only if it exercises the same decisions as
-   real work. Codec-from-spec tasks are the exception: a standard like
-   DEFLATE *is* the specification, and the task is implementing it.
+   real work. Codec-from-spec tasks are the honorable exception: the
+   standard *is* the specification, and the task is implementing it.
 
 ### Size it right
 
@@ -114,8 +112,8 @@ The best task sources, in order:
 
 ### Novelty check
 
-Before accepting a task, ask: could a model pass this by recall? If the
-task is "implement DEFLATE," the answer is *partially* — happy paths are
+Before accepting a task, ask: could a model pass this by recall? For a
+well-known standard, the answer is *partially* — happy paths are
 memorized. That's what held-out adversarial tests are for (§5). But if the
 *entire* task is a well-known implementation with a public test suite, it
 measures memory, not problem-solving.
@@ -296,9 +294,8 @@ Two FrontierCode mechanisms worth adopting where they fit:
   `reference/` dir in the image, not in file comments. And for tasks
   derived from real sessions, check the *documents*: AGENTS.md files,
   READMEs, design docs, TODO comments and changelogs routinely describe
-  the intended fix in words ("model-thinking should own thinking
-  levels"). **Grep the base state for the fix's keywords before
-  shipping.** SWE-bench Pro's most embarrassing failure mode: agents ran
+  the intended fix in words. **Grep the base state for the fix's keywords
+  before shipping.** SWE-bench Pro's most embarrassing failure mode: agents ran
   `git log --all` / `git show <hash>` and pasted the merged fix. 87% of
   Claude's flagged cheats were exactly this. Our defense is structural:
   there is no gold to find.
@@ -320,9 +317,9 @@ Two FrontierCode mechanisms worth adopting where they fit:
   spot-check that the task is solvable and the verifier accepts a correct
   answer, and so calibration runs have a known-100% artifact.
 - Never merged upstream, never published with the task pack. If the task
-  derives from a private session (our Task 01), the "reference" is the
-  shipped implementation — proven correct by its own test suite, which is
-  even better.
+  derives from a private session, the "reference" is the shipped
+  implementation — proven correct by its own test suite, which is even
+  better.
 
 ---
 
