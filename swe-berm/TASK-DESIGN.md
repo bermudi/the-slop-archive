@@ -1,7 +1,14 @@
 # Task Design Guide
 
 How to design tasks for this benchmark — and what to avoid. This document
-distills the practices from three sources, adapted to our Harbor + pi stack:
+distills the practices from three sources, adapted to our Harbor + pi stack.
+
+This is a **personal benchmark** — no paper, no public leaderboard. Where
+the sources prescribe heavyweight process for credibility (human review
+boards, multi-layer QC), this guide keeps the *mechanism* and drops the
+*ceremony*: §10 marks what to relax and what must survive. The short
+version: relax anything whose cost scales with the number of tasks and
+exists to convince strangers; keep anything that makes a single score true.
 
 - **DeepSWE v1** (datacurve.ai) — contamination-free long-horizon tasks,
   behavioral verification, judge-audited grading quality
@@ -373,7 +380,65 @@ A task enters the benchmark only after passing all five gates:
 
 ---
 
-## 10. Checklist for a new task
+## 10. Relaxation guide (personal benchmark)
+
+Sorted by effort saved. The first group is pure ceremony for credibility —
+cut freely. The second group survives not because it's rigorous-looking but
+because it's *load-bearing*: each one exists to make a single score true.
+
+**Relax — ceremony that only matters when convincing strangers:**
+
+- **The 5-gate QC pipeline → 2 gates.** Keep: verifier fails on base state
+  (the reverse check, 2 minutes, catches a shocking fraction of broken
+  tasks) + one valid-alternative solution (the acceptance-breadth check —
+  the single highest-value QC step, and cheap: write the fix differently
+  once). Cut: formal calibration (0/33/66/100 solutions — 4 extra
+  solutions' work per task), the formal hack report, multi-stage review.
+  Instead: one adversarial *attempt*, and trust your own read of one
+  failing rollout when something looks off.
+- **Anti-contamination discipline → weakened.** The contamination question
+  only matters if you compare your pi results against published numbers on
+  public benchmarks. You won't — you compare models against each other on
+  *your* tasks. "Written from scratch" still helps (recall-free tasks
+  discriminate better), but adapting a real PR or a session artifact is
+  fine when it's convenient. The adversarial tier still matters — not as
+  anti-cheat, but because memorized happy paths are where model differences
+  actually show.
+- **Quality rubrics and blockers.** FrontierCode needs them because it
+  measures mergeability across subjective axes. If your tasks are
+  behavioral (they are), per-test pass/fail weighted by tier is enough.
+  Adopt rubrics later only if you build a task where "correct but ugly"
+  genuinely differs from "correct."
+- **Cross-version comparability and score stability.** v1.1's discipline
+  exists so a public leaderboard stays comparable across benchmark updates.
+  Yours just needs today's run to be true.
+- **Repo diversity, language quotas, ≥500-star sourcing rules.** Pick
+  whatever code is at hand — your own repos and session transcripts are
+  ideal.
+
+**Keep — these make one score true:**
+
+- **Determinism.** Non-negotiable even solo. A flaky verifier turns model
+  comparison into astrology and costs you hours of confused debugging.
+  (We watched a wall-clock TTL test flip in real time on this machine.)
+- **Behavioral verification + no gold in the environment.** This is the
+  entire validity of the benchmark. If the agent can find the answer, or
+  the verifier grades structure instead of behavior, every score is a lie.
+- **Separate verifier environment + per-test structured report.** The
+  two mechanisms that stop gaming-by-omission (deleted tests, early exits,
+  monkey-patched frameworks) — cheap in Harbor (one task.toml line and a
+  CTRF emitter) and they're why you can trust a surprising pass.
+- **Prompt↔verifier bijection.** Costs one extra read-through at authoring
+  time; saves you from grading a task you didn't state. The cheapest
+  high-value discipline in this guide.
+- **No wall-clock as a metric.** DeepSWE v1.1 dropped it entirely — host
+  load and provider queues make it noise. Track tokens and cost; let
+  wall-clock be trivia.
+- **The regression suite.** Leaving the rest of the codebase working is
+  half the task; without it you're rewarding agents that burn the repo to
+  ship the feature.
+
+## 11. Checklist for a new task
 
 - [ ] One capability, discoverable from real work (session/issue/standard)
 - [ ] Sized 20–60 min for a strong agent; difficulty from subtlety, not bulk
