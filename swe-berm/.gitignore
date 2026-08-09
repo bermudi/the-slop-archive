@@ -41,12 +41,19 @@ sessions/**
 !Makefile
 !build.zig
 !build.zig.zon
-*.bin
-*.o
-*.json
-trajectory.jsonl
-solution
+# Session/work cruft — scoped so Harbor tasks (tasks/*/solution, fixtures, etc.) stay tracked
+sessions/**/*.bin
+sessions/**/*.o
+sessions/**/*.json
+sessions/**/trajectory.jsonl
+sessions/**/solution
+work/**/*.bin
+work/**/*.o
+work/**/*.json
+work/**/trajectory.jsonl
+work/**/solution
 
 # Python
 **/__pycache__/
 *.pyc
+jobs/

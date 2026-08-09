@@ -13,14 +13,16 @@ looking up. Do not resurrect it.
 
 ## Layout
 
-- `main` — the live benchmark: task recipes + docs. Currently docs only.
+- `main` — the live benchmark: task recipes + docs. Task 01 is scaffolded.
 - `legacy` — the old stack at `42a2b54` (Python harness, old Task 01 DNS
   codec, archived agent sessions). Read-only museum.
 - `TASK-DESIGN.md` — **the authority on how tasks are designed**: Harbor
   anatomy, red lines, prompt/verifier/environment rules, failure-mode
   taxonomy, and §10's relaxation guide (what a personal benchmark skips).
   Any task that contradicts it is wrong by definition.
-- `tasks/` — Harbor task recipes (none yet; Task 01 is next — see below).
+- `tasks/` — Harbor task recipes:
+  - `tasks/01-pi-thinking-ownership/` — single-ownership refactor of
+    `bermudis-pi-goodies` (see Current state).
 
 ## Stack & tooling
 
@@ -53,25 +55,44 @@ looking up. Do not resurrect it.
 
 Full rationale and the failure stories behind each: TASK-DESIGN.md.
 
-## Current state & next task
+## Current state
 
-**Task 01 (planned, not scaffolded): "single-ownership refactor of a pi
-extension bundle."** Derived from a real pi session (2026-08-09) where the
-user's `bermudis-pi-goodies` bundle had two modules owning thinking level
-(`fixed-defaults` + `model-thinking`); the approved fix gave
-`model-thinking` sole ownership. Source material:
+**Task 01 — scaffolded: `tasks/01-pi-thinking-ownership/`**
+"Single-ownership refactor of a pi extension bundle." Derived from the
+2026-08-09 pi session where `bermudis-pi-goodies` had two modules owning
+thinking level (`fixed-defaults` + `model-thinking`); the approved fix
+(after "lgtm" at event index 62) gave `model-thinking` sole ownership.
 
 - Session transcript:
   `~/.pi/agent/sessions/--home-daniel-build-agent-extensions--/2026-08-09T06-23-37-607Z_019fe530-f087-73d9-b337-f6fe69ab1fa6.jsonl`
-  ("lgtm" approval at event index 62; everything after is the fix)
-- Codebase: `~/build/agent-extensions` (uncommitted working tree = the
-  reference solution; HEAD = base state)
-- Proven verdict: 97/98 tests pass; the 1 failure is a pre-existing
-  wall-clock-dependent cache-TTL test in `provider-balance.ts` (reads the
-  live `~/.pi/agent/cache/provider-balance.json`) — the canonical example
-  of the determinism sin, kept as documentation, out of the verifier.
+- Codebase: `~/build/agent-extensions` — `HEAD` (`7f00c6a`) = base state
+  (buggy dual ownership); uncommitted working tree = reference solution
+  (7 files: `fixed-defaults.ts`, `fixed-defaults.test.ts`,
+  `model-thinking.ts`, `model-thinking.test.ts`, `model-policy.test.ts`
+  (new), `README.md`, `index.ts`)
+- Proven verdict: 97/98 pass; the 1 failure is a pre-existing
+  wall-clock-dependent cache-TTL test in `provider-balance.ts` (reads
+  `~/.pi/agent/cache/provider-balance.json`) — the canonical determinism
+  sin, excluded from the verifier.
 
-Planned anatomy: environment bakes the bundle at pre-change state with
-vendored `node_modules`; instruction states the symptom + constraints (not
-the fix); verifier = updated behavior suite (hidden) + cross-module
-integration test (adversarial) + untouched suites as regression.
+Anatomy (per TASK-DESIGN.md):
+
+- `environment/Dockerfile` — `oven/bun:1.2.21`, bundle at `7f00c6a` with
+  `bun install --frozen-lockfile` at build time, `git init` + `tag base`,
+  `network_mode = "no-network"`
+- `instruction.md` — symptom (sessions start on wrong model/thinking) +
+  constraints (single ownership, legacy field ignored, README migration,
+  keep suite green); no file-level todo list
+- `tests/` — verifier in **separate** environment, per-test CTRF + reward,
+  operational outcomes (`no_patch`/`apply_failed`/`build_failed`) apart
+  from capability zeros; hidden = updated behavior suite,
+  adversarial = `model-policy.test.ts` cross-module integration +
+  malformed-config handling, regression = `kilo`, `prefer-tools`, `tps`
+  (provider-balance excluded)
+- `solution/` — `solution.patch` (1055 lines, 7 files) + `reference/`
+  snapshot for reviewers; `solve.sh` applies the patch
+
+Validated: hidden suite fails on base (5/12 fixed-defaults tests fail) and
+passes on the reference solution (23/23 hidden+adversarial, 44/44
+regression, 69/69 total with README check). No prose gold in the sandbox
+(base `grep` for fix keywords is clean).
