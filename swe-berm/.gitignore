@@ -1,0 +1,52 @@
+# Build artifacts
+**/zig-out/
+**/.zig-cache/
+*.o
+*.tar
+
+# Staged candidate solution (created by harness/run.py --solution).
+# run.py resets solution/candidate/ each run and stages only allowlisted
+# source. reference/ (the gen_tests.py oracle) is tracked separately.
+tasks/*/solution/candidate/
+
+# Test reports (generated per-run)
+**/report.json
+
+# Work directories (agent output): work/<task>-<run_id>/ holds ~KB of agent
+# source plus ~GB of trajectory.jsonl streaming partials, .zig-cache/, and
+# compiled binaries. Never tracked. Source worth keeping is extracted to
+# sessions/ by harness/archive.py (which uses the same source filter as grading).
+work/
+
+# Archived agent code: sessions/<task>/<run_id>/. Track ONLY source the agent
+# wrote (*.c/.h/.zig/.nim/.v/.zon/.rs/.go, Makefile, build.zig) — extracted by
+# harness/archive.py from the full work dir. Everything else the agent left
+# behind (trajectories, caches, binaries, *.bin fixtures, scratch) is gitignored
+# so a stray copy never bloats the repo. Mirrors source_filter.
+#
+# Mechanism (a git gotcha): once a directory is ignored, git won't descend, so
+# file-level un-ignores never match. The fix is to un-ignore the directory tree
+# (slash-terminated `!sessions/**/`) so git traverses it, then un-ignore source
+# by extension. Cruft patterns at the bottom keep the rest ignored.
+sessions/**
+!sessions/**/
+!*.c
+!*.h
+!*.zig
+!*.nim
+!*.v
+!*.zon
+!*.rs
+!*.go
+!Makefile
+!build.zig
+!build.zig.zon
+*.bin
+*.o
+*.json
+trajectory.jsonl
+solution
+
+# Python
+**/__pycache__/
+*.pyc
