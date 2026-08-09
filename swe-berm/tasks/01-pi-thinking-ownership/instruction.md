@@ -9,16 +9,18 @@ On a new session pi loads the startup value (`max`), then `model-thinking` overr
 
 Your task is to make the ownership unambiguous:
 
-1. `model-thinking` becomes the **sole owner** of thinking levels. It already does this — keep it that way and make it robust (malformed config should be reported and ignored, not treated as empty; `set` should not overwrite a broken file).
-2. `fixed-defaults` must pin **only** the startup provider/model. Remove thinking-level handling from its config, file validation, commands, and event handling. A legacy `thinkingLevel` field in an existing `fixed-defaults.json` should be accepted for compatibility but ignored (warn once, don't fail).
-3. Update the bundle's documentation so it no longer describes thinking-level pinning as part of `fixed-defaults` and documents the migration.
-4. Keep the existing test suite green. The only expected failing test in the base is the wall-clock-dependent cache-TTL test — do not try to fix host-state reads.
+1. `model-thinking` becomes the **sole owner** of thinking levels. It already does this — keep it that way and make it robust: a malformed `model-thinking.json` is reported and ignored (never treated as an empty policy), `/model-thinking set` refuses to overwrite a broken file, and `/model-thinking` status reports the broken state.
+2. `fixed-defaults` must pin **only** the startup provider/model. Remove thinking-level handling from its config type, file validation, commands, and event handling:
+   - `/fixed-defaults set` writes only `provider`/`model` (rewriting an existing file into that format).
+   - `/fixed-defaults` (status) shows the pin and the active model and must not claim to control thinking.
+   - A legacy `thinkingLevel` field in an existing `fixed-defaults.json` is accepted for compatibility but ignored — warn once (not on every read), don't fail, and point the user at `/model-thinking`, including in the status output.
+3. Update the bundle's documentation so it no longer describes thinking-level pinning as part of `fixed-defaults`, shows the provider/model-only JSON shape, documents the legacy-field migration, and explains that a hand-created pin applies from the next fresh session.
+4. Keep the existing test suite green. Run `bun test` in `pi-packages/bermudis-pi-goodies` and `tsc --noEmit` if available.
 
 ## Constraints
 
 - Do not merge the two files. The bundle is one pi extension; the modules stay separate and their registration order is deterministic.
 - Provider and model remain a coupled pair — a file with only one of them is still invalid.
-- `/fixed-defaults set` should pin the current model and rewrite the file in the new provider/model-only format. `/fixed-defaults reset` should persist the current model as Pi's last selection before removing the pin.
-- Verify with `bun test` in `pi-packages/bermudis-pi-goodies` and `tsc --noEmit` if available.
+- `/fixed-defaults reset` persists the current model as Pi's last selection before removing the pin; with no active model it refuses to remove the pin.
 
 You are on `main` at the base commit (no future history). Work on this branch and commit your fix when done.

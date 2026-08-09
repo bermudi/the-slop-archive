@@ -1,6 +1,6 @@
 #!/bin/bash
 # Reference solve: apply the verified patch that makes model-thinking the sole owner.
-# This is the post-lgtm state from ~/build/agent-extensions (7f00c6a -> working tree).
+# Patch = curated base (7f00c6a + provider-balance fixture fix) -> 8e1081d bundle state.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCH="$SCRIPT_DIR/solution.patch"

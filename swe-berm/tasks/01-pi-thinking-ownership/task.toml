@@ -11,6 +11,11 @@ keywords = ["pi", "typescript", "refactor", "ownership"]
 base_commit = "7f00c6abe8d726c2f8648231f2005b8826877a92"
 base_repo = "agent-extensions"
 bundle = "pi-packages/bermudis-pi-goodies"
+# Curated base: bundle @ 7f00c6a plus the provider-balance.test.ts fixture-key
+# fix from aea4772 (unrelated determinism fix folded INTO the base so the
+# graded patch is a single capability). Solution = bundle @ 8e1081d.
+base_curation = "7f00c6a + provider-balance.test.ts@aea4772"
+solution_commit = "8e1081d447c87f88db83666b71723d25b2675327"
 
 [environment]
 network_mode = "no-network"

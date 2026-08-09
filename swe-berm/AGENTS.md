@@ -13,7 +13,7 @@ looking up. Do not resurrect it.
 
 ## Layout
 
-- `main` — the live benchmark: task recipes + docs. Task 01 is scaffolded.
+- `main` — the live benchmark: task recipes + docs. Task 01 is final.
 - `legacy` — the old stack at `42a2b54` (Python harness, old Task 01 DNS
   codec, archived agent sessions). Read-only museum.
 - `TASK-DESIGN.md` — **the authority on how tasks are designed**: Harbor
@@ -57,42 +57,55 @@ Full rationale and the failure stories behind each: TASK-DESIGN.md.
 
 ## Current state
 
-**Task 01 — scaffolded: `tasks/01-pi-thinking-ownership/`**
+**Task 01 — final: `tasks/01-pi-thinking-ownership/`**
 "Single-ownership refactor of a pi extension bundle." Derived from the
 2026-08-09 pi session where `bermudis-pi-goodies` had two modules owning
 thinking level (`fixed-defaults` + `model-thinking`); the approved fix
 (after "lgtm" at event index 62) gave `model-thinking` sole ownership.
 
+The final implementation is `agent-extensions` @ `8e1081d` — which is a
+*stack* of three commits (`f0972bb` split, `aea4772` provider-balance test
+fix, `8e1081d` review hardening). **The benchmark base is curated, not a
+single commit**: bundle @ `7f00c6a` + the unrelated `provider-balance.test.ts`
+fixture-key fix from `aea4772`, folded INTO the base so the graded patch is
+exactly one capability (8 files) and the base suite is fully green. See
+`task.toml` `[metadata]` for provenance.
+
 - Session transcript:
   `~/.pi/agent/sessions/--home-daniel-build-agent-extensions--/2026-08-09T06-23-37-607Z_019fe530-f087-73d9-b337-f6fe69ab1fa6.jsonl`
-- Codebase: `~/build/agent-extensions` — `HEAD` (`7f00c6a`) = base state
-  (buggy dual ownership); uncommitted working tree = reference solution
-  (7 files: `fixed-defaults.ts`, `fixed-defaults.test.ts`,
-  `model-thinking.ts`, `model-thinking.test.ts`, `model-policy.test.ts`
-  (new), `README.md`, `index.ts`)
-- Proven verdict: 97/98 pass; the 1 failure is a pre-existing
-  wall-clock-dependent cache-TTL test in `provider-balance.ts` (reads
-  `~/.pi/agent/cache/provider-balance.json`) — the canonical determinism
-  sin, excluded from the verifier.
+- Source codebase: `~/build/agent-extensions` (bundle history is public
+  there; only the curated snapshot ships in the task).
 
 Anatomy (per TASK-DESIGN.md):
 
-- `environment/Dockerfile` — `oven/bun:1.2.21`, bundle at `7f00c6a` with
+- `environment/Dockerfile` — `oven/bun:1.2.21`, curated base snapshot with
   `bun install --frozen-lockfile` at build time, `git init` + `tag base`,
   `network_mode = "no-network"`
-- `instruction.md` — symptom (sessions start on wrong model/thinking) +
-  constraints (single ownership, legacy field ignored, README migration,
-  keep suite green); no file-level todo list
-- `tests/` — verifier in **separate** environment, per-test CTRF + reward,
-  operational outcomes (`no_patch`/`apply_failed`/`build_failed`) apart
-  from capability zeros; hidden = updated behavior suite,
-  adversarial = `model-policy.test.ts` cross-module integration +
-  malformed-config handling, regression = `kilo`, `prefer-tools`, `tps`
-  (provider-balance excluded)
-- `solution/` — `solution.patch` (1055 lines, 7 files) + `reference/`
-  snapshot for reviewers; `solve.sh` applies the patch
+- `instruction.md` — symptom + constraints; states every graded
+  requirement (single ownership, legacy field ignored + warn once,
+  status/migration behavior, reset semantics, README migration, green suite)
+- `tests/` — verifier in **separate** environment, deterministic
+  **manifest scoring**: `points.json` (frozen 100-point rubric, every point
+  on a base-failing behavioral test) + `score.py` (ledger integrity:
+  missing/duplicate/skipped/unexpected tests → `verifier_error`, never a
+  pass; no exit-code fallback). Operational outcomes
+  (`no_patch`/`apply_failed`/`build_failed`) stay apart from capability
+  scores; preservation/regression failures → `invalid` (no score).
+  Hidden = 14 fixed-defaults + 10 model-thinking + 3 model-policy + 3
+  readme-check; regression = kilo, prefer-tools, tps, **provider-balance
+  (now hermetic** — fixture cache key)
+- `solution/` — `solution.patch` (1428 lines, 8 files incl. new
+  `json-file.ts` + `model-policy.test.ts`) + `reference/` snapshot;
+  `solve.sh` applies the patch
 
-Validated: hidden suite fails on base (5/12 fixed-defaults tests fail) and
-passes on the reference solution (23/23 hidden+adversarial, 44/44
-regression, 69/69 total with README check). No prose gold in the sandbox
-(base `grep` for fix keywords is clean).
+Validated (dry-run in /tmp, no Docker):
+
+- Base (curated) scores **0/100**; reference scores **100/100** — both
+  stable across 3 runs.
+- Calibration record: listener-only fix = 0, minimal ownership split = 50,
+  gold−reset-persist = 87, gold−legacy-warning = 94, gold−docs = 90,
+  alternative structure (no shared json-file.ts) = 100, disabled
+  fixed-defaults = `invalid` (preservation gate).
+- No prose gold in the sandbox (base `grep` for fix keywords is clean).
+- Docker daemon was unavailable during this pass — `harbor run` still
+  needs a final smoke test once dockerd is up.

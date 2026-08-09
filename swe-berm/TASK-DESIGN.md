@@ -280,6 +280,33 @@ Two FrontierCode mechanisms worth adopting where they fit:
 - **Scope check**: automated diff constraints (files allowed/denied, size
   limits). Restraint is part of the task.
 
+### Scoring as a test manifest (Task 01's graded rubric)
+
+When a task has genuinely partial solutions that should rank differently,
+replace the binary reward with a **points manifest** (`tests/points.json`):
+
+- Every point belongs to a **named behavioral test** that fails on the
+  base state and passes on the reference — the reverse-classical check is
+  built into the manifest. A no-op patch scores 0 by construction.
+- Weights are frozen at authoring time and calibrated against deliberate
+  partial solutions (see the Task 01 calibration record): base/no-op = 0,
+  minimal ownership split ≈ 46–50, full fix minus docs = 90, reference = 100.
+- Tests that already pass on the base are **preservation/regression gates**
+  (0 points, must pass): breaking existing behavior invalidates the run
+  rather than earning a low score. This catches "delete the module"
+  solutions, which fail the gate via missing commands.
+- **Ledger integrity is a hard requirement**: missing, duplicate, skipped,
+  or unexpected capability tests → `verifier_error`, never points. The
+  scorer parses the per-test report only — there is no exit-code fallback,
+  so a crashed test run can never look like a pass.
+- Scoring is deterministic by construction: same manifest + same test
+  ledger → same score. No LLM or human judge at grading time; reviewers
+  inform *which behaviors matter*, the manifest fixes *how much*.
+
+Manifest weights are a judgment call, but a transparent, frozen, and
+calibrated one. The alternative — LLM-as-judge rubrics — re-introduces
+model variance into the very scores you're trying to measure.
+
 ---
 
 ## 6. Designing the environment (`environment/Dockerfile`)
@@ -433,10 +460,12 @@ because it's *load-bearing*: each one exists to make a single score true.
   anti-cheat, but because memorized happy paths are where model differences
   actually show.
 - **Quality rubrics and blockers.** FrontierCode needs them because it
-  measures mergeability across subjective axes. If your tasks are
-  behavioral (they are), per-test pass/fail weighted by tier is enough.
-  Adopt rubrics later only if you build a task where "correct but ugly"
-  genuinely differs from "correct."
+  measures mergeability across subjective axes. Default to per-test
+  pass/fail weighted by tier; but when a task has genuinely partial
+  solutions that should rank differently, adopt a **rubric-as-manifest**:
+  fixed points on named behavioral tests (Task 01 does this — see §5).
+  The manifest version keeps grading deterministic: no judge in the loop,
+  weights frozen and calibrated before trials.
 - **Cross-version comparability and score stability.** v1.1's discipline
   exists so a public leaderboard stays comparable across benchmark updates.
   Yours just needs today's run to be true.
@@ -488,11 +517,13 @@ most of it. Ten good tasks beat thirty unreviewed ones.
       prompt, regression suite included (base-state failures excluded),
       deterministic across 3 runs, per-test structured report with
       operational outcomes (`no_patch`/`apply_failed`/`build_failed`)
-      tagged apart from capability zeros, tiers with adversarial cases
+      tagged apart from capability zeros, tiers with adversarial cases,
+      ledger-integrity checks (missing/duplicate/skipped tests never pass)
 - [ ] Reverse check: verifier fails on the base state
 - [ ] Hack report: adversarial solution fails; alternative-structure
       solution passes
-- [ ] Calibration: 0/33/66/100 solutions score as expected
+- [ ] Calibration: partial solutions (no-op / minimal / missing-docs)
+      score in designed bands; reference = 100 (or manifest max)
 - [ ] `task.toml`: `network_mode = "no-network"`,
       `verifier.environment_mode = "separate"`, honest timeouts and resources
 - [ ] Reviewed by someone who didn't write it, including one failing

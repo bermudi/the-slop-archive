@@ -1,0 +1,4 @@
+# Node modules are baked at image build time and must not enter the git base
+node_modules/
+# Built bundle artifact (not shipped, gitignored upstream too)
+*.bundle.ts

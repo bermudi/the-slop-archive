@@ -5,7 +5,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 
 WORKDIR /app
 
-# Copy the bundle snapshot (base state at 7f00c6a)
+# Copy the bundle snapshot (curated base: 7f00c6a + provider-balance
+# fixture-key fix from aea4772, so the base suite is fully green and the
+# graded patch is one capability only)
 # Context is the environment/ directory (Harbor sets CONTEXT_DIR=environment)
 COPY pi-packages ./pi-packages
 
@@ -21,7 +23,7 @@ RUN git config --global --add safe.directory /app \
  && git config user.name "harbor" \
  && git config core.hooksPath /dev/null \
  && git add . \
- && git commit -m "base: bermudis-pi-goodies at 7f00c6a" \
+ && git commit -m "base: bermudis-pi-goodies curated base (7f00c6a + provider-balance fix)" \
  && git tag base \
  && git branch -M main
 

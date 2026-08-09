@@ -184,8 +184,22 @@ describe("fixed-defaults", () => {
 
     await handler("set", context(ctx.cwd, { model: model("zai", "glm-5.2") }));
 
-    // Later model changes restore the NEW pin. Thinking changes are not
-    // handled by fixed-defaults.
+    // Pi persists the selected model and thinking level before it emits the
+    // model event. Reproduce that ordering rather than asking the extension to
+    // restore against stale settings.
+    writeFileSync(
+      settingsPath,
+      `${JSON.stringify(
+        {
+          ...original,
+          defaultProvider: "anthropic",
+          defaultModel: "claude-sonnet-4",
+          defaultThinkingLevel: "low",
+        },
+        null,
+        2,
+      )}\n`,
+    );
     await pi.emit(
       "model_select",
       {
@@ -205,7 +219,9 @@ describe("fixed-defaults", () => {
       ...original,
       defaultProvider: "zai",
       defaultModel: "glm-5.2",
+      defaultThinkingLevel: "low",
     });
+    expect(pi.handlers.has("thinking_level_select")).toBe(false);
   });
 
   test("reset removes the override and stops pinning", async () => {
@@ -322,6 +338,9 @@ describe("fixed-defaults", () => {
     expect(message).toContain("pinned provider: zai");
     expect(message).toContain("pinned model: glm-5.2");
     expect(message).not.toContain("pinned thinking");
+    expect(message).not.toContain("\nthinking:");
+    expect(message).toContain("legacy thinkingLevel is present but ignored");
+    expect(message).toContain("/model-thinking");
     expect(message).toContain(join(agentDir, "fixed-defaults.json"));
   });
 
@@ -376,6 +395,63 @@ describe("fixed-defaults", () => {
     expect(message).toContain("override file invalid");
     expect(message).toContain("no pin active");
     expect(message).not.toContain("pinned model");
+  });
+
+  test("the legacy thinkingLevel warning is emitted once, not on every read", async () => {
+    const { agentDir, pi, ctx } = setup();
+    writeFileSync(
+      join(agentDir, "fixed-defaults.json"),
+      `${JSON.stringify(
+        { provider: "zai", model: "glm-5.2", thinkingLevel: "max" },
+        null,
+        2,
+      )}\n`,
+    );
+    const warnings: string[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: string[]) => {
+      warnings.push(args);
+    };
+    try {
+      fixedDefaults(pi.api, { agentDir });
+      await pi.emit("session_start", { reason: "startup" }, ctx);
+      await pi.emit(
+        "model_select",
+        {
+          model: { provider: "zai", id: "glm-5.2" },
+          previousModel: undefined,
+          source: "set",
+        },
+        ctx,
+      );
+      await pi.commands.get("fixed-defaults")!("", ctx);
+      expect(warnings.length).toBe(1);
+      expect(warnings[0].join(" ")).toContain("thinkingLevel");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("set rewrites a legacy override file into the provider/model-only format", async () => {
+    const { agentDir, pi, ctx } = setup();
+    writeFileSync(
+      join(agentDir, "fixed-defaults.json"),
+      `${JSON.stringify(
+        { provider: "zai", model: "glm-5.2", thinkingLevel: "max" },
+        null,
+        2,
+      )}\n`,
+    );
+    fixedDefaults(pi.api, { agentDir });
+    const handler = pi.commands.get("fixed-defaults")!;
+
+    await handler("set", context(ctx.cwd, { model: model("zai", "glm-5.2") }));
+
+    expect(
+      JSON.parse(
+        readFileSync(join(agentDir, "fixed-defaults.json"), "utf8"),
+      ) as unknown,
+    ).toEqual({ provider: "zai", model: "glm-5.2" });
   });
 });
 

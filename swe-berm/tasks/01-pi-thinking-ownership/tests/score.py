@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Score Task 01 from bun's junit.xml against the points manifest.
+
+The manifest (points.json) is the frozen scoring contract: every graded
+requirement maps to named behavioral tests with fixed points. No LLM or human
+judge is involved at grading time; the same manifest plus the gold junit are
+the calibration record.
+
+Outcomes:
+  verifier_error — the test ledger cannot be trusted: junit unparseable,
+                   duplicate capability tests, missing capability tests, or
+                   unexpected tests in hidden files. Never awards points.
+  invalid        — a preservation or regression test failed or went missing.
+                   The solution broke existing behavior; no capability score.
+  scored         — every test ran; score = sum of points for passed point
+                   tests (0..100). Operational outcomes (no_patch /
+                   apply_failed / build_failed) are emitted by test.sh before
+                   this script runs and never reach a capability score.
+
+Skipped tests count as failed. Extra tests in regression files (e.g. an agent
+adding its own tests) are ignored; they can't earn points.
+"""
+import json
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+MANIFEST = Path(__file__).parent / "points.json"
+HIDDEN_FILES = {
+    "fixed-defaults.test.ts",
+    "model-thinking.test.ts",
+    "model-policy.test.ts",
+    "readme-check.test.ts",
+}
+OUT_DIR = Path("/logs/verifier")
+
+
+def write_reports(reward: dict, ctrf: dict) -> None:
+    out = OUT_DIR
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        out = Path("/tmp/verifier")
+        out.mkdir(parents=True, exist_ok=True)
+    (out / "reward.json").write_text(json.dumps(reward, indent=2))
+    (out / "reward.txt").write_text(str(reward.get("score", 0)))
+    (out / "ctrf.json").write_text(json.dumps(ctrf, indent=2))
+
+
+def fail(manifest, reason: str) -> None:
+    ctrf = {"results": {"summary": {"total": 0, "passed": 0, "failed": 0}, "tests": []}}
+    write_reports(
+        {"reward": 0, "outcome": "verifier_error", "reason": reason, "manifest_version": manifest["version"]},
+        ctrf,
+    )
+    print(f"[score] verifier_error: {reason}")
+
+
+def main() -> int:
+    junit_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/junit.xml")
+    manifest = json.loads(MANIFEST.read_text())
+
+    try:
+        root = ET.parse(junit_path).getroot()
+    except Exception as exc:  # noqa: BLE001 - report and bail, never guess
+        fail(manifest, f"junit unparseable: {exc}")
+        return 1
+
+    results: dict[str, str] = {}  # test id -> passed|failed|skipped
+    dupes: list[str] = []
+    for case in root.iter("testcase"):
+        key = f"{case.get('file', '?')}::{case.get('name', '?')}"
+        if key in results:
+            dupes.append(key)
+        if case.find("skipped") is not None:
+            results[key] = "skipped"
+        elif case.find("failure") is not None or case.find("error") is not None:
+            results[key] = "failed"
+        else:
+            results[key] = "passed"
+
+    points = manifest["points"]
+    preservation = set(manifest["preservation"])
+    regression = set(manifest["regression"])
+    capability_keys = set(points) | preservation
+
+    # --- Ledger integrity for capability tests ---
+    missing_cap = sorted(capability_keys - set(results))
+    unexpected_hidden = sorted(
+        k for k in results
+        if k not in capability_keys and k.split("::", 1)[0] in HIDDEN_FILES
+    )
+    if dupes or missing_cap or unexpected_hidden:
+        reason = (
+            f"ledger integrity: dupes={dupes} missing={missing_cap} "
+            f"unexpected_hidden={unexpected_hidden}"
+        )
+        fail(manifest, reason)
+        return 1
+
+    # --- Preservation + regression gates (0 points, must pass) ---
+    gate_failures = [
+        k for k in (preservation | regression)
+        if results.get(k) != "passed"
+    ]
+    missing_gate = sorted((preservation | regression) - set(results))
+    if gate_failures or missing_gate:
+        reason = (
+            f"regression/preservation failure: failed={sorted(gate_failures)} "
+            f"missing={missing_gate}"
+        )
+        write_reports(
+            {
+                "reward": 0,
+                "outcome": "invalid",
+                "reason": reason,
+                "score": None,
+                "manifest_version": manifest["version"],
+            },
+            {"results": {"summary": {"total": len(results), "passed": 0, "failed": len(gate_failures) + len(missing_gate)}, "tests": []}},
+        )
+        print(f"[score] invalid: {reason}")
+        return 0
+
+    # --- Capability score ---
+    score = 0
+    cat_scores = {cat: 0 for cat in manifest["categories"]}
+    ledger = []
+    for key, meta in sorted(points.items()):
+        passed = results.get(key) == "passed"
+        earned = meta["points"] if passed else 0
+        score += earned
+        cat_scores[meta["category"]] += earned
+        ledger.append(
+            {
+                "id": key,
+                "tier": "hidden" if key.split("::", 1)[0] != "readme-check.test.ts" else "documentation",
+                "category": meta["category"],
+                "points": meta["points"],
+                "earned": earned,
+                "status": "passed" if passed else results.get(key, "missing"),
+            }
+        )
+
+    for key in sorted(preservation | regression):
+        ledger.append({"id": key, "tier": "regression", "points": 0, "earned": 0, "status": "passed"})
+
+    reward = {
+        "reward": round(score / 100.0, 4),
+        "outcome": "scored",
+        "score": score,
+        "total_points": manifest["total_points"],
+        "categories": {
+            cat: {"label": manifest["categories"][cat]["label"], "earned": cat_scores[cat], "total": manifest["categories"][cat]["points"]}
+            for cat in manifest["categories"]
+        },
+        "manifest_version": manifest["version"],
+    }
+    ctrf = {
+        "results": {
+            "summary": {
+                "total": len(results),
+                "passed": sum(1 for v in results.values() if v == "passed"),
+                "failed": sum(1 for v in results.values() if v != "passed"),
+            },
+            "tests": ledger,
+        }
+    }
+    write_reports(reward, ctrf)
+    print(f"[score] {score}/100 scored (outcome=scored) categories={cat_scores}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

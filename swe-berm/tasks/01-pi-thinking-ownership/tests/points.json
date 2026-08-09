@@ -1,0 +1,190 @@
+{
+  "version": 1,
+  "total_points": 100,
+  "categories": {
+    "ownership_split": {
+      "label": "fixed-defaults stops owning thinking",
+      "points": 34
+    },
+    "legacy_migration": {
+      "label": "legacy thinkingLevel migration & warnings",
+      "points": 12
+    },
+    "malformed_config": {
+      "label": "malformed model-thinking config handling",
+      "points": 12
+    },
+    "reset": {
+      "label": "reset semantics",
+      "points": 16
+    },
+    "integration": {
+      "label": "cross-session integration",
+      "points": 16
+    },
+    "documentation": {
+      "label": "documentation",
+      "points": 10
+    }
+  },
+  "points": {
+    "fixed-defaults.test.ts::legacy thinkingLevel is ignored and does not pin thinking": {
+      "category": "ownership_split",
+      "points": 12
+    },
+    "fixed-defaults.test.ts::model events restore the pinned override without changing thinking": {
+      "category": "ownership_split",
+      "points": 10
+    },
+    "fixed-defaults.test.ts::reset removes the override and stops pinning": {
+      "category": "reset",
+      "points": 8
+    },
+    "fixed-defaults.test.ts::reset without an active model leaves the pin in place": {
+      "category": "reset",
+      "points": 3
+    },
+    "fixed-defaults.test.ts::set pins the active model and applies it immediately": {
+      "category": "ownership_split",
+      "points": 6
+    },
+    "fixed-defaults.test.ts::set rewrites a legacy override file into the provider/model-only format": {
+      "category": "legacy_migration",
+      "points": 6
+    },
+    "fixed-defaults.test.ts::status shows the effective pin, active model, and override path": {
+      "category": "ownership_split",
+      "points": 6
+    },
+    "fixed-defaults.test.ts::the legacy thinkingLevel warning is emitted once, not on every read": {
+      "category": "legacy_migration",
+      "points": 6
+    },
+    "model-policy.test.ts::a legacy pin cannot override thinking in the current or next fresh session": {
+      "category": "integration",
+      "points": 16
+    },
+    "model-policy.test.ts::reset removes only the model pin and preserves thinking policy": {
+      "category": "reset",
+      "points": 5
+    },
+    "model-thinking.test.ts::set refuses to overwrite malformed config": {
+      "category": "malformed_config",
+      "points": 6
+    },
+    "model-thinking.test.ts::status reports malformed config instead of treating it as empty": {
+      "category": "malformed_config",
+      "points": 6
+    },
+    "readme-check.test.ts::documents the legacy thinkingLevel migration": {
+      "category": "documentation",
+      "points": 3
+    },
+    "readme-check.test.ts::documents the provider/model-only JSON shape": {
+      "category": "documentation",
+      "points": 3
+    },
+    "readme-check.test.ts::does not describe thinking pinning as part of fixed-defaults": {
+      "category": "documentation",
+      "points": 4
+    }
+  },
+  "preservation": [
+    "fixed-defaults.test.ts::an invalid override file is ignored and nothing is applied",
+    "fixed-defaults.test.ts::provider or model alone is rejected and nothing is applied",
+    "fixed-defaults.test.ts::set without an active model warns and writes nothing",
+    "fixed-defaults.test.ts::status warns when the override file is invalid",
+    "fixed-defaults.test.ts::unknown subcommands show usage",
+    "fixed-defaults.test.ts::with no override, events leave settings untouched",
+    "model-policy.test.ts::model selection applies thinking while restoring only the pinned model",
+    "model-thinking.test.ts::applies exact model settings before provider defaults",
+    "model-thinking.test.ts::does not alter an exact override when the user changes levels",
+    "model-thinking.test.ts::does not remember automatic or manual thinking changes",
+    "model-thinking.test.ts::leaves unmanaged models to Pi and does not create a config",
+    "model-thinking.test.ts::reset explicitly clears malformed config",
+    "model-thinking.test.ts::set can bootstrap an unmanaged model",
+    "model-thinking.test.ts::set saves the current level for the current model and overwrites its entry",
+    "model-thinking.test.ts::supports max and does not remember its own clamped change"
+  ],
+  "regression": [
+    "kilo.test.ts:::free suffix and kilo-native ids are free",
+    "kilo.test.ts::absent levels become null (unsupported), except off",
+    "kilo.test.ts::anthropic chat-completions models also get anthropic cache control",
+    "kilo.test.ts::chat-completions models get openrouter reasoning format",
+    "kilo.test.ts::converts per-token to per-million-token",
+    "kilo.test.ts::deepseek-v4 completions models require reasoning_content on replays",
+    "kilo.test.ts::deepseek-v4-pro fallback when variants are absent",
+    "kilo.test.ts::descriptive variants map by their declared effort",
+    "kilo.test.ts::does not treat an off-only variant as reasoning support",
+    "kilo.test.ts::empty / missing variants yield undefined",
+    "kilo.test.ts::extension registration performs no startup fetch",
+    "kilo.test.ts::false for other providers",
+    "kilo.test.ts::handles missing / invalid",
+    "kilo.test.ts::maps each level from variant reasoning efforts",
+    "kilo.test.ts::max remains distinct from xhigh",
+    "kilo.test.ts::priced models are not free",
+    "kilo.test.ts::recognizes enabled reasoning variants when the parameter is omitted",
+    "kilo.test.ts::rejects immediately when already aborted",
+    "kilo.test.ts::removes its abort listener when the sleep resolves (no leak)",
+    "kilo.test.ts::resolves after the delay",
+    "kilo.test.ts::responses-API models suppress session_id and long cache retention",
+    "kilo.test.ts::reuses a fresh catalog instead of fetching on every picker refresh",
+    "kilo.test.ts::signal stays usable after many resolved sleeps",
+    "kilo.test.ts::true for ai_sdk_provider 'openai'",
+    "kilo.test.ts::true for current gpt-5 / o-series ids even without the tag",
+    "kilo.test.ts::trusts the supported_parameters declaration",
+    "kilo.test.ts::uses the Pi 0.84 stored snapshot and publication API",
+    "kilo.test.ts::variant-derived map wins when present",
+    "kilo.test.ts::zero-priced but non-free-convention ids are not trusted as free",
+    "prefer-tools.test.ts::allows arithmetic and variable expansion",
+    "prefer-tools.test.ts::allows command arguments and redirect targets",
+    "prefer-tools.test.ts::allows git grep and uv-wrapped tools",
+    "prefer-tools.test.ts::allows heredoc bodies",
+    "prefer-tools.test.ts::allows multiline quoted commit messages",
+    "prefer-tools.test.ts::allows quoted or heredoc occurrences of legacy tool text",
+    "prefer-tools.test.ts::blocks command substitutions outside quotes",
+    "prefer-tools.test.ts::blocks direct legacy commands",
+    "prefer-tools.test.ts::blocks sudo and absolute/relative paths",
+    "provider-balance.test.ts::accepts a finite numeric balance",
+    "provider-balance.test.ts::background refresh failures do not write through the TUI",
+    "provider-balance.test.ts::clamps impossible percentages",
+    "provider-balance.test.ts::clamps out-of-range remaining percent",
+    "provider-balance.test.ts::clamps usage overshoot to zero",
+    "provider-balance.test.ts::computes remaining credits",
+    "provider-balance.test.ts::computes usage when percentage is omitted",
+    "provider-balance.test.ts::distinguishes a window's length from its reset countdown",
+    "provider-balance.test.ts::does not refresh before the 5th turn",
+    "provider-balance.test.ts::includes the named Spark quota",
+    "provider-balance.test.ts::joins labelled windows with a middot",
+    "provider-balance.test.ts::model selection does not await the balance refresh",
+    "provider-balance.test.ts::omits the reset glyph when no timestamp is known",
+    "provider-balance.test.ts::parses a weekly base limit and the separate Spark limit",
+    "provider-balance.test.ts::parses a well-formed cache entry",
+    "provider-balance.test.ts::parses base windows and their reset timestamps",
+    "provider-balance.test.ts::parses token windows and ignores MCP time limits",
+    "provider-balance.test.ts::projects base and named windows to remaining-percent segments",
+    "provider-balance.test.ts::reads the account ID from the namespaced auth claim",
+    "provider-balance.test.ts::refreshes on every 5th turn end over a 20-turn run",
+    "provider-balance.test.ts::rejects API errors, unknown windows, and responses without tokens",
+    "provider-balance.test.ts::rejects malformed external responses",
+    "provider-balance.test.ts::rejects malformed or non-Codex tokens",
+    "provider-balance.test.ts::rejects malformed responses",
+    "provider-balance.test.ts::rejects responses without a valid quota window",
+    "provider-balance.test.ts::renders a quota window with a reset glyph and no prose",
+    "provider-balance.test.ts::renders credits compactly",
+    "provider-balance.test.ts::returns null for a provider with no cache entry",
+    "provider-balance.test.ts::returns null for entries older than the TTL",
+    "provider-balance.test.ts::shows a reset countdown when Z.ai supplies nextResetTime",
+    "provider-balance.test.ts::shows remaining quota with compact window labels",
+    "provider-balance.test.ts::shows the shortest token window first",
+    "provider-balance.test.ts::sorts windows shortest-first and flips used to remaining",
+    "provider-balance.test.ts::uses cents for ordinary balances",
+    "provider-balance.test.ts::uses compact notation for large balances",
+    "tps.test.ts::does not notify when no agent_start preceded the end",
+    "tps.test.ts::does not notify when there is no assistant output",
+    "tps.test.ts::does not notify without UI",
+    "tps.test.ts::notifies tokens/sec and usage at agent end",
+    "tps.test.ts::resets the timer after a turn so a second end without start stays silent",
+    "tps.test.ts::sums usage across multiple assistant messages and skips others"
+  ]
+}
