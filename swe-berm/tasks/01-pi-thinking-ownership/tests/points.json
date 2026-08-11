@@ -1,10 +1,16 @@
 {
-  "version": 2,
-  "total_points": 100,
   "categories": {
-    "ownership_split": {
-      "label": "fixed-defaults stops owning thinking",
-      "points": 32
+    "bundle_registration": {
+      "label": "bundle entry point registration",
+      "points": 5
+    },
+    "documentation": {
+      "label": "documentation",
+      "points": 8
+    },
+    "integration": {
+      "label": "cross-session integration",
+      "points": 10
     },
     "legacy_migration": {
       "label": "legacy thinkingLevel migration & warnings",
@@ -14,21 +20,13 @@
       "label": "malformed model-thinking config handling",
       "points": 17
     },
+    "ownership_split": {
+      "label": "fixed-defaults stops owning thinking",
+      "points": 32
+    },
     "reset": {
       "label": "reset semantics",
       "points": 16
-    },
-    "integration": {
-      "label": "cross-session integration",
-      "points": 10
-    },
-    "bundle_registration": {
-      "label": "bundle entry point registration",
-      "points": 5
-    },
-    "documentation": {
-      "label": "documentation",
-      "points": 8
     }
   },
   "points": {
@@ -122,6 +120,12 @@
     "model-thinking.test.ts::set saves the current level for the current model and overwrites its entry",
     "model-thinking.test.ts::supports max and does not remember its own clamped change"
   ],
+  "provenance": {
+    "base_junit": "/tmp/base-junit.xml",
+    "generator": "tests/gen_manifest.py",
+    "gold_junit": "/tmp/gold-junit.xml",
+    "note": "Regenerate with gen_manifest.py; do not hand-edit weights."
+  },
   "regression": [
     "kilo.test.ts:::free suffix and kilo-native ids are free",
     "kilo.test.ts::absent levels become null (unsupported), except off",
@@ -202,5 +206,7 @@
     "tps.test.ts::notifies tokens/sec and usage at agent end",
     "tps.test.ts::resets the timer after a turn so a second end without start stays silent",
     "tps.test.ts::sums usage across multiple assistant messages and skips others"
-  ]
+  ],
+  "total_points": 100,
+  "version": 2
 }

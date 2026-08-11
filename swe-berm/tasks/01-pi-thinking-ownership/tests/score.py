@@ -21,6 +21,7 @@ Skipped tests count as failed. Extra tests in regression files (e.g. an agent
 adding its own tests) are ignored; they can't earn points.
 """
 import json
+import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -33,7 +34,7 @@ HIDDEN_FILES = {
     "bundle-registration.test.ts",
     "readme-check.test.ts",
 }
-OUT_DIR = Path("/logs/verifier")
+OUT_DIR = Path(os.environ.get("SCORE_OUT_DIR") or "/logs/verifier")
 
 
 def write_reports(reward: dict, ctrf: dict) -> None:

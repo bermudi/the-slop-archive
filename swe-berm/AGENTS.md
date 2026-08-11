@@ -78,6 +78,11 @@ exactly one capability (8 files) and the base suite is fully green. See
 
 Anatomy (per TASK-DESIGN.md):
 
+- `README.md` — the task runbook: layout, grading contract, outcome
+  taxonomy, hidden-suite composition (reference vs. rubric-added), how to
+  dry-run, regenerate the manifest (`tests/gen_manifest.py`), re-run
+  calibration (`tests/calibrate.py`), add a graded point, and the
+  outstanding Docker smoke-test checklist.
 - `environment/Dockerfile` — `oven/bun:1.2.21`, curated base snapshot with
   `bun install --frozen-lockfile` at build time, `git init` + `tag base`,
   python3 installed (the verifier's scorer needs it), `network_mode =
@@ -89,7 +94,10 @@ Anatomy (per TASK-DESIGN.md):
   **manifest scoring**: `points.json` (frozen 100-point rubric, every point
   on a base-failing behavioral test) + `score.py` (ledger integrity:
   missing/duplicate/skipped/unexpected tests → `verifier_error`, never a
-  pass; no exit-code fallback). Operational outcomes
+  pass; no exit-code fallback). Regeneration and calibration are committed
+  tooling: `gen_manifest.py` (gold/base junit → points.json, hard-checks
+  the reverse check) and `calibrate.py` (scores 9 deliberate partials,
+  bands are a contract). Operational outcomes
   (`no_patch`/`apply_failed`/`build_failed`) stay apart from capability
   scores; preservation/regression failures → `invalid` (no score).
   Hidden = 14 fixed-defaults + 11 model-thinking + 3 model-policy + 1
