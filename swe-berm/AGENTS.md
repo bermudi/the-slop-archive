@@ -80,7 +80,8 @@ Anatomy (per TASK-DESIGN.md):
 
 - `environment/Dockerfile` — `oven/bun:1.2.21`, curated base snapshot with
   `bun install --frozen-lockfile` at build time, `git init` + `tag base`,
-  `network_mode = "no-network"`
+  python3 installed (the verifier's scorer needs it), `network_mode =
+  "no-network"`
 - `instruction.md` — symptom + constraints; states every graded
   requirement (single ownership, legacy field ignored + warn once,
   status/migration behavior, reset semantics, README migration, green suite)
@@ -91,26 +92,30 @@ Anatomy (per TASK-DESIGN.md):
   pass; no exit-code fallback). Operational outcomes
   (`no_patch`/`apply_failed`/`build_failed`) stay apart from capability
   scores; preservation/regression failures → `invalid` (no score).
-  Hidden = 14 fixed-defaults + 10 model-thinking + 3 model-policy + 3
-  readme-check; regression = kilo, prefer-tools, tps, **provider-balance
-  (now hermetic** — fixture cache key)
-- `solution/` — `solution.patch` (1428 lines, 8 files incl. new
-  `json-file.ts` + `model-policy.test.ts`) + `reference/` snapshot;
-  `solve.sh` applies the patch
+  Hidden = 14 fixed-defaults + 11 model-thinking + 3 model-policy + 1
+  bundle-registration + 4 readme-check; regression = kilo, prefer-tools,
+  tps, **provider-balance (now hermetic** — fixture cache key)
+- `solution/` — `solution.patch` (1508 lines, 9 files incl. new
+  `json-file.ts`, `model-policy.test.ts`, `bundle-registration.test.ts`) +
+  `reference/` snapshot; `solve.sh` applies the patch
 
 Validated (dry-run in /tmp, no Docker):
 
 - Base (curated) scores **0/100**; reference scores **100/100** — both
   stable across 3 runs.
-- Calibration record: listener-only fix = 0, minimal ownership split = 50,
-  gold−reset-persist = 87, gold−legacy-warning = 94, gold−docs = 90,
-  alternative structure (no shared json-file.ts) = 100, disabled
-  fixed-defaults = `invalid` (preservation gate). Regression-suite attacks
-  are neutralized: the verifier restores kilo/prefer-tools/tps/
-  provider-balance tests from the `base` tag before running, so weakened or
-  deleted regression tests can't hide breakage (weaken-attack → build/invalid,
-  delete-attack → neutralized, score reflects capability only); a smuggled
-  `bunfig.toml` is deleted before the run.
+- Calibration record (manifest v2): listener-only fix = 5 (bundle-level
+  evidence), minimal ownership split = 47, gold−reset-persist = 87,
+  gold−legacy-warning = 94, gold−docs = 92, alternative structure (no
+  shared json-file.ts) = 100, disabled fixed-defaults = `invalid`
+  (preservation gate). The bundle-registration test exercises the REAL
+  entry point (index.ts), so a patch that breaks or unregisters the
+  modules can't score 100. Regression-suite attacks are neutralized: the
+  verifier restores kilo/prefer-tools/tps/provider-balance tests from the
+  `base` tag before running (weaken-attack → build/invalid, delete-attack
+  → neutralized); a smuggled `bunfig.toml` is deleted before the run;
+  patch collection always combines committed + staged + working-tree
+  changes (a partially-committed agent is not penalized for the
+  uncommitted remainder).
 - No prose gold in the sandbox (base `grep` for fix keywords is clean).
 - Docker daemon was unavailable during this pass — `harbor run` still
   needs a final smoke test once dockerd is up.

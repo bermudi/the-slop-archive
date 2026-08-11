@@ -1,10 +1,10 @@
 {
-  "version": 1,
+  "version": 2,
   "total_points": 100,
   "categories": {
     "ownership_split": {
       "label": "fixed-defaults stops owning thinking",
-      "points": 34
+      "points": 32
     },
     "legacy_migration": {
       "label": "legacy thinkingLevel migration & warnings",
@@ -12,7 +12,7 @@
     },
     "malformed_config": {
       "label": "malformed model-thinking config handling",
-      "points": 12
+      "points": 17
     },
     "reset": {
       "label": "reset semantics",
@@ -20,17 +20,25 @@
     },
     "integration": {
       "label": "cross-session integration",
-      "points": 16
+      "points": 10
+    },
+    "bundle_registration": {
+      "label": "bundle entry point registration",
+      "points": 5
     },
     "documentation": {
       "label": "documentation",
-      "points": 10
+      "points": 8
     }
   },
   "points": {
+    "bundle-registration.test.ts::the entry point registers both ownership modules and no thinking listener": {
+      "category": "bundle_registration",
+      "points": 5
+    },
     "fixed-defaults.test.ts::legacy thinkingLevel is ignored and does not pin thinking": {
       "category": "ownership_split",
-      "points": 12
+      "points": 10
     },
     "fixed-defaults.test.ts::model events restore the pinned override without changing thinking": {
       "category": "ownership_split",
@@ -62,11 +70,15 @@
     },
     "model-policy.test.ts::a legacy pin cannot override thinking in the current or next fresh session": {
       "category": "integration",
-      "points": 16
+      "points": 10
     },
     "model-policy.test.ts::reset removes only the model pin and preserves thinking policy": {
       "category": "reset",
       "points": 5
+    },
+    "model-thinking.test.ts::set refuses to overwrite a config with an invalid thinking level": {
+      "category": "malformed_config",
+      "points": 6
     },
     "model-thinking.test.ts::set refuses to overwrite malformed config": {
       "category": "malformed_config",
@@ -74,19 +86,23 @@
     },
     "model-thinking.test.ts::status reports malformed config instead of treating it as empty": {
       "category": "malformed_config",
-      "points": 6
+      "points": 5
     },
     "readme-check.test.ts::documents the legacy thinkingLevel migration": {
       "category": "documentation",
-      "points": 3
+      "points": 2
     },
-    "readme-check.test.ts::documents the provider/model-only JSON shape": {
+    "readme-check.test.ts::explains that a hand-created pin applies from the next fresh session": {
       "category": "documentation",
-      "points": 3
+      "points": 2
     },
-    "readme-check.test.ts::does not describe thinking pinning as part of fixed-defaults": {
+    "readme-check.test.ts::fixed-defaults is described as pinning provider/model only": {
       "category": "documentation",
-      "points": 4
+      "points": 2
+    },
+    "readme-check.test.ts::shows the provider/model-only JSON shape": {
+      "category": "documentation",
+      "points": 2
     }
   },
   "preservation": [

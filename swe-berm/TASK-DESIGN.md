@@ -290,7 +290,7 @@ replace the binary reward with a **points manifest** (`tests/points.json`):
   built into the manifest. A no-op patch scores 0 by construction.
 - Weights are frozen at authoring time and calibrated against deliberate
   partial solutions (see the Task 01 calibration record): base/no-op = 0,
-  minimal ownership split ≈ 46–50, full fix minus docs = 90, reference = 100.
+  minimal ownership split ≈ 42–50, full fix minus docs = 92, reference = 100.
 - Tests that already pass on the base are **preservation/regression gates**
   (0 points, must pass): breaking existing behavior invalidates the run
   rather than earning a low score. This catches "delete the module"

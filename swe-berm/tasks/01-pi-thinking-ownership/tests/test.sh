@@ -92,6 +92,7 @@ log "injecting hidden tests"
 cp /tests/hidden/fixed-defaults.test.ts /app/pi-packages/bermudis-pi-goodies/fixed-defaults.test.ts
 cp /tests/hidden/model-thinking.test.ts /app/pi-packages/bermudis-pi-goodies/model-thinking.test.ts
 cp /tests/hidden/model-policy.test.ts /app/pi-packages/bermudis-pi-goodies/model-policy.test.ts
+cp /tests/hidden/bundle-registration.test.ts /app/pi-packages/bermudis-pi-goodies/bundle-registration.test.ts
 cp /tests/hidden/readme-check.test.ts /app/pi-packages/bermudis-pi-goodies/readme-check.test.ts
 
 # Restore the regression suites to their base state. The agent's patch may
@@ -130,7 +131,7 @@ cd /app/pi-packages/bermudis-pi-goodies
 
 set +e
 run_log bun test --reporter=junit --reporter-outfile=/tmp/junit.xml \
-  fixed-defaults.test.ts model-thinking.test.ts model-policy.test.ts readme-check.test.ts \
+  fixed-defaults.test.ts model-thinking.test.ts model-policy.test.ts bundle-registration.test.ts readme-check.test.ts \
   kilo.test.ts prefer-tools.test.ts tps.test.ts provider-balance.test.ts
 BUN_EXIT=$?
 set -e

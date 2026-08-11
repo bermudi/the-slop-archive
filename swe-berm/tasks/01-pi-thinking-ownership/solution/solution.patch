@@ -78,6 +78,65 @@ index 0584c4b..cd5eaf8 100644
  
  ## Provider and balance details
  
+diff --git a/pi-packages/bermudis-pi-goodies/bundle-registration.test.ts b/pi-packages/bermudis-pi-goodies/bundle-registration.test.ts
+new file mode 100644
+index 0000000..79e72ba
+--- /dev/null
++++ b/pi-packages/bermudis-pi-goodies/bundle-registration.test.ts
+@@ -0,0 +1,53 @@
++import { describe, expect, test } from "bun:test";
++import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
++import bundle from "./index.ts";
++
++describe("bundle registration", () => {
++  test("the entry point registers both ownership modules and no thinking listener", () => {
++    const events = new Map<string, number>();
++    const commands = new Set<string>();
++    const providers = new Set<string>();
++
++    // Proxy harness: records every registration call, no-ops the rest, and
++    // gives the events channel a stub. This exercises the REAL bundle entry
++    // point (index.ts) rather than importing the two modules directly.
++    const api = new Proxy({} as ExtensionAPI, {
++      get(_target, prop) {
++        if (prop === "events") {
++          return { on: () => () => {}, emit: () => {} };
++        }
++        if (prop === "on") {
++          return (event: string) => {
++            events.set(event, (events.get(event) ?? 0) + 1);
++            return () => {};
++          };
++        }
++        if (prop === "registerCommand") {
++          return (name: string) => {
++            commands.add(name);
++          };
++        }
++        if (prop === "registerProvider") {
++          return (id: string) => {
++            providers.add(id);
++          };
++        }
++        return () => {};
++      },
++    });
++
++    bundle(api);
++
++    expect(commands.has("fixed-defaults")).toBe(true);
++    expect(commands.has("model-thinking")).toBe(true);
++    expect(providers.has("kilo")).toBe(true);
++    // Exactly one thinking_level_select listener remains in the bundle:
++    // provider-balance's read-only footer tracking. The base bundle has two
++    // (provider-balance + fixed-defaults' restoring listener); the split must
++    // remove fixed-defaults'.
++    expect(events.get("thinking_level_select") ?? 0).toBe(1);
++    // both ownership modules still act on session start and model selection
++    expect(events.get("session_start") ?? 0).toBeGreaterThanOrEqual(2);
++    expect(events.get("model_select") ?? 0).toBeGreaterThanOrEqual(2);
++  });
++});
 diff --git a/pi-packages/bermudis-pi-goodies/fixed-defaults.test.ts b/pi-packages/bermudis-pi-goodies/fixed-defaults.test.ts
 index 8b6958c..52d4cb6 100644
 --- a/pi-packages/bermudis-pi-goodies/fixed-defaults.test.ts
@@ -1155,7 +1214,7 @@ index 0000000..23fb3e1
 +  });
 +});
 diff --git a/pi-packages/bermudis-pi-goodies/model-thinking.test.ts b/pi-packages/bermudis-pi-goodies/model-thinking.test.ts
-index 11d9e76..37a9054 100644
+index 11d9e76..939da17 100644
 --- a/pi-packages/bermudis-pi-goodies/model-thinking.test.ts
 +++ b/pi-packages/bermudis-pi-goodies/model-thinking.test.ts
 @@ -42,12 +42,15 @@ function model(
@@ -1175,7 +1234,7 @@ index 11d9e76..37a9054 100644
      },
    } as unknown as ExtensionContext;
  }
-@@ -235,6 +238,48 @@ describe("model-thinking", () => {
+@@ -235,6 +238,69 @@ describe("model-thinking", () => {
      });
    });
  
@@ -1207,6 +1266,27 @@ index 11d9e76..37a9054 100644
 +
 +    expect(notifications[0]).toContain("config invalid");
 +    expect(notifications[0]).toContain("no policy applied");
++  });
++
++  test("set refuses to overwrite a config with an invalid thinking level", async () => {
++    const path = temporaryConfig();
++    const broken = { models: { "unmanaged/model": "turbo" } };
++    writeFileSync(path, `${JSON.stringify(broken, null, 2)}\n`);
++    const pi = new PiHarness();
++    modelThinking(pi.api, { configPath: path });
++    const notifications: string[] = [];
++    const ctx = context(model("unmanaged", "model"), notifications);
++
++    await pi.commands.get("model-thinking")!("set", ctx);
++
++    // Valid JSON but an invalid shape must not be treated as an empty policy
++    // either: `set` refuses to overwrite it.
++    expect(readFileSync(path, "utf8")).toBe(
++      `${JSON.stringify(broken, null, 2)}\n`,
++    );
++    expect(notifications.some((message) => message.includes("Repair"))).toBe(
++      true,
++    );
 +  });
 +
 +  test("reset explicitly clears malformed config", async () => {

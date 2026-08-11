@@ -49,13 +49,15 @@ mkdir -p /logs/artifacts
 cd /app
 # base tag created in environment Dockerfile
 if git rev-parse --verify base >/dev/null 2>&1; then BASE=base; else BASE=HEAD; fi
-# committed changes
+# Always combine committed, staged, and working-tree changes. The agent was
+# told to commit, but a mix (some committed, some not) must not lose work:
+#   committed diff:  BASE..HEAD
+#   staged diff:     HEAD..index
+#   working diff:    index..worktree
+# concatenated, they cover the full delta from base to the final tree.
 git diff --binary $BASE HEAD > /logs/artifacts/model.patch || true
-# also capture unstaged/working-tree changes (agent that didn't commit)
-if [ ! -s /logs/artifacts/model.patch ]; then
-  git diff --binary > /logs/artifacts/model.patch || true
-  git diff --binary --cached >> /logs/artifacts/model.patch || true
-fi
+git diff --binary >> /logs/artifacts/model.patch || true
+git diff --binary --cached >> /logs/artifacts/model.patch || true
 # ensure file exists even if empty
 touch /logs/artifacts/model.patch
 """

@@ -1,7 +1,9 @@
 FROM oven/bun:1.2.21
 
-# System deps for git operations
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+# System deps for git operations. python3 is required by the verifier's
+# manifest scorer (tests/score.py) — Harbor builds the verifier from this
+# same image, so it must be present here.
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates python3 && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

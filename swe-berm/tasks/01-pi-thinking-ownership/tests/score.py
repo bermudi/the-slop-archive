@@ -30,6 +30,7 @@ HIDDEN_FILES = {
     "fixed-defaults.test.ts",
     "model-thinking.test.ts",
     "model-policy.test.ts",
+    "bundle-registration.test.ts",
     "readme-check.test.ts",
 }
 OUT_DIR = Path("/logs/verifier")

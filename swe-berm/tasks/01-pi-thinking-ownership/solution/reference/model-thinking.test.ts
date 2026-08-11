@@ -268,6 +268,27 @@ describe("model-thinking", () => {
     expect(notifications[0]).toContain("no policy applied");
   });
 
+  test("set refuses to overwrite a config with an invalid thinking level", async () => {
+    const path = temporaryConfig();
+    const broken = { models: { "unmanaged/model": "turbo" } };
+    writeFileSync(path, `${JSON.stringify(broken, null, 2)}\n`);
+    const pi = new PiHarness();
+    modelThinking(pi.api, { configPath: path });
+    const notifications: string[] = [];
+    const ctx = context(model("unmanaged", "model"), notifications);
+
+    await pi.commands.get("model-thinking")!("set", ctx);
+
+    // Valid JSON but an invalid shape must not be treated as an empty policy
+    // either: `set` refuses to overwrite it.
+    expect(readFileSync(path, "utf8")).toBe(
+      `${JSON.stringify(broken, null, 2)}\n`,
+    );
+    expect(notifications.some((message) => message.includes("Repair"))).toBe(
+      true,
+    );
+  });
+
   test("reset explicitly clears malformed config", async () => {
     const path = temporaryConfig();
     writeFileSync(path, "{ not valid json\n");
