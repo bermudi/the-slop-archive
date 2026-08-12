@@ -100,7 +100,8 @@ Anatomy (per TASK-DESIGN.md):
   the reverse check) and `calibrate.py` (scores 11 deliberate partials,
   bands are a contract). Operational outcomes
   (`no_patch`/`apply_failed`/`build_failed`) stay apart from capability
-  scores; preservation/regression failures → `invalid` (no score).
+  scores; preservation/regression failures → `invalid` (reward 0, with
+  diagnostic `score_if_valid`).
   Hidden = 16 fixed-defaults + 12 model-thinking + 3 model-policy + 1
   bundle-registration + 4 readme-check; regression = kilo, prefer-tools,
   tps, **provider-balance (now hermetic** — fixture cache key)
@@ -133,9 +134,8 @@ Validated (dry-run in /tmp, no Docker):
   verifier restores kilo/prefer-tools/tps/provider-balance tests from the
   `base` tag before running (weaken-attack → build/invalid, delete-attack
   → neutralized); a smuggled `bunfig.toml` is deleted before the run;
-  patch collection always combines committed + staged + working-tree
-  changes (a partially-committed agent is not penalized for the
-  uncommitted remainder).
+  patch collection stages the final non-ignored worktree and emits one
+  coherent base-to-final diff (new files do not need a manual `git add`).
 - No prose gold in the sandbox (base `grep` for fix keywords is clean).
 - Docker daemon was unavailable during this pass — `harbor run` still
   needs a final smoke test once dockerd is up.

@@ -9,11 +9,13 @@
 #     here and never count as capability zeros;
 #   - score.py maps the bun junit ledger to the frozen 100-point manifest
 #     (tests/points.json). Every point belongs to a named behavioral test that
-#     fails on the base state. Missing/duplicate/skipped capability tests,
-#     or an unparseable junit, are verifier_error — score.py never falls back
+#     fails on the base state. Missing/duplicate/skipped expected tests, or an
+#     unparseable junit, are verifier_error — score.py never falls back
 #     to process exit codes, so a crashed run can never look like a pass.
+#     A skipped expected test is also verifier_error rather than a capability
+#     zero or an invalid regression.
 set -uo pipefail
-trap 'if [ ! -f /logs/verifier/reward.json ] && [ ! -f /logs/verifier/reward.txt ]; then mkdir -p /logs/verifier; echo "{\"reward\":0,\"outcome\":\"verifier_error\",\"reason\":\"test.sh trapped\"}" > /logs/verifier/reward.json; echo 0 > /logs/verifier/reward.txt; fi' EXIT
+trap 'if [ ! -f /logs/verifier/reward.json ] && [ ! -f /logs/verifier/reward.txt ]; then mkdir -p /logs/verifier; echo "{\"reward\":0,\"outcome\":\"verifier_error\",\"reason\":\"test.sh trapped\",\"score_if_valid\":null}" > /logs/verifier/reward.json; echo 0 > /logs/verifier/reward.txt; fi' EXIT
 
 log() { echo "[verifier] $*"; }
 mkdir -p /logs/verifier
@@ -21,14 +23,14 @@ export RUN_LOG=/logs/verifier/run.log
 : > "$RUN_LOG" 2>/dev/null || true
 run_log() { echo "+ $*" >> "$RUN_LOG" 2>/dev/null; "$@" 2>&1 | tee -a "$RUN_LOG"; return "${PIPESTATUS[0]}"; }
 
-cd /app || { log "no /app"; echo '{"reward":0,"outcome":"verifier_error","reason":"no_app"}' > /logs/verifier/reward.json; echo 0 > /logs/verifier/reward.txt; exit 0; }
+cd /app || { log "no /app"; echo '{"reward":0,"outcome":"verifier_error","reason":"no_app","score_if_valid":null}' > /logs/verifier/reward.json; echo 0 > /logs/verifier/reward.txt; exit 0; }
 
 # --- 1. Operational outcomes: patch handling ---
 PATCH="/logs/artifacts/model.patch"
 if [ ! -f "$PATCH" ]; then
   log "no patch artifact at $PATCH -> no_patch"
   cat > /logs/verifier/reward.json <<'JSON'
-{"reward":0,"outcome":"no_patch","reason":"no patch collected from agent"}
+{"reward":0,"outcome":"no_patch","reason":"no patch collected from agent","score_if_valid":null}
 JSON
   echo 0 > /logs/verifier/reward.txt
   cat > /logs/verifier/ctrf.json <<'JSON'
@@ -39,7 +41,7 @@ fi
 if [ ! -s "$PATCH" ]; then
   log "empty patch -> no_patch"
   cat > /logs/verifier/reward.json <<'JSON'
-{"reward":0,"outcome":"no_patch","reason":"empty patch"}
+{"reward":0,"outcome":"no_patch","reason":"empty patch","score_if_valid":null}
 JSON
   echo 0 > /logs/verifier/reward.txt
   cat > /logs/verifier/ctrf.json <<'JSON'
@@ -53,7 +55,7 @@ if ! git apply --binary "$PATCH" 2>>"$RUN_LOG"; then
   log "patch apply failed"
   cat /logs/verifier/run.log 2>/dev/null | tail -50
   cat > /logs/verifier/reward.json <<'JSON'
-{"reward":0,"outcome":"apply_failed","reason":"git apply failed"}
+{"reward":0,"outcome":"apply_failed","reason":"git apply failed","score_if_valid":null}
 JSON
   echo 0 > /logs/verifier/reward.txt
   cat > /logs/verifier/ctrf.json <<'JSON'
@@ -74,7 +76,7 @@ if command -v tsc >/dev/null 2>&1; then
   if ! run_log tsc --noEmit --project pi-packages/bermudis-pi-goodies/tsconfig.json; then
     log "tsc failed -> build_failed"
     cat > /logs/verifier/reward.json <<'JSON'
-{"reward":0,"outcome":"build_failed","reason":"tsc failed"}
+{"reward":0,"outcome":"build_failed","reason":"tsc failed","score_if_valid":null}
 JSON
     echo 0 > /logs/verifier/reward.txt
     cat > /logs/verifier/ctrf.json <<'JSON'
@@ -107,7 +109,7 @@ if ! run_log git checkout base -- \
   pi-packages/bermudis-pi-goodies/provider-balance.test.ts; then
   log "regression restore failed -> verifier_error"
   cat > /logs/verifier/reward.json <<'JSON'
-{"reward":0,"outcome":"verifier_error","reason":"could not restore regression suites from base tag"}
+{"reward":0,"outcome":"verifier_error","reason":"could not restore regression suites from base tag","score_if_valid":null}
 JSON
   echo 0 > /logs/verifier/reward.txt
   cat > /logs/verifier/ctrf.json <<'JSON'
@@ -144,7 +146,7 @@ python3 /tests/score.py /tmp/junit.xml || {
   if [ ! -f /logs/verifier/reward.json ]; then
     log "score.py failed without writing a reward, writing verifier_error"
     cat > /logs/verifier/reward.json <<'JSON'
-{"reward":0,"outcome":"verifier_error","reason":"score.py crashed"}
+{"reward":0,"outcome":"verifier_error","reason":"score.py crashed","score_if_valid":null}
 JSON
     echo 0 > /logs/verifier/reward.txt
   fi

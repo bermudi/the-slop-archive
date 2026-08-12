@@ -236,10 +236,12 @@ one — cost cap, crash, or with patch-based grading the dominant one:
 **the patch doesn't apply or doesn't build**). A per-test ledger folds
 both into "0% passed" unless the verifier emits a distinct outcome
 category — `no_patch`, `apply_failed`, `build_failed` — that never counts
-as a capability zero. Without the tag, harness bugs masquerade as model
-failures and unreliable configs look worse than they are. (This was an
-open question in the old benchmark's scorer; with patch-extraction
-grading it stops being optional.)
+as a capability zero. A trustworthy capability ledger can also retain a
+`score_if_valid` diagnostic when a separate regression gate makes the run
+`invalid`; the diagnostic must never affect `reward`. Without these tags,
+harness bugs masquerade as model failures and unreliable configs look worse
+than they are. (This was an open question in the old benchmark's scorer; with
+patch-extraction grading it stops being optional.)
 
 ### Tiers
 

@@ -8,17 +8,19 @@ the calibration record.
 
 Outcomes:
   verifier_error — the test ledger cannot be trusted: junit unparseable,
-                   duplicate capability tests, missing capability tests, or
-                   unexpected tests in hidden files. Never awards points.
+                   duplicate, missing, skipped, or unexpected capability
+                   tests. Never awards points.
   invalid        — a preservation or regression test failed or went missing.
-                   The solution broke existing behavior; no capability score.
+                   The solution broke existing behavior; no capability score is
+                   awarded, but score_if_valid records the capability points
+                   that the otherwise trustworthy ledger earned.
   scored         — every test ran; score = sum of points for passed point
                    tests (0..100). Operational outcomes (no_patch /
                    apply_failed / build_failed) are emitted by test.sh before
                    this script runs and never reach a capability score.
 
-Skipped tests count as failed. Extra tests in regression files (e.g. an agent
-adding its own tests) are ignored; they can't earn points.
+Extra tests in regression files (e.g. an agent adding its own tests) are
+ignored; they can't earn points.
 """
 import json
 import os
@@ -54,10 +56,70 @@ def write_reports(reward: dict, ctrf: dict) -> None:
 def fail(manifest, reason: str) -> None:
     ctrf = {"results": {"summary": {"total": 0, "passed": 0, "failed": 0}, "tests": []}}
     write_reports(
-        {"reward": 0, "outcome": "verifier_error", "reason": reason, "manifest_version": manifest["version"]},
+        {
+            "reward": 0,
+            "outcome": "verifier_error",
+            "reason": reason,
+            "score_if_valid": None,
+            "manifest_version": manifest["version"],
+        },
         ctrf,
     )
     print(f"[score] verifier_error: {reason}")
+
+
+def capability_report(manifest: dict, results: dict[str, str]) -> tuple[int, dict[str, int], list[dict]]:
+    """Return the capability score and its per-test ledger.
+
+    This is deliberately separate from the preservation/regression gate. A
+    failed gate makes a run invalid, but the capability result is still useful
+    diagnostic telemetry once the capability ledger itself has passed its
+    integrity checks.
+    """
+    points = manifest["points"]
+    score = 0
+    cat_scores = {cat: 0 for cat in manifest["categories"]}
+    ledger = []
+    for key, meta in sorted(points.items()):
+        passed = results.get(key) == "passed"
+        earned = meta["points"] if passed else 0
+        score += earned
+        cat_scores[meta["category"]] += earned
+        ledger.append(
+            {
+                "id": key,
+                "tier": "hidden" if key.split("::", 1)[0] != "readme-check.test.ts" else "documentation",
+                "category": meta["category"],
+                "points": meta["points"],
+                "earned": earned,
+                "status": "passed" if passed else results.get(key, "missing"),
+            }
+        )
+
+    for key in sorted(set(manifest["preservation"]) | set(manifest["regression"])):
+        ledger.append(
+            {
+                "id": key,
+                "tier": "regression",
+                "points": 0,
+                "earned": 0,
+                "status": results.get(key, "missing"),
+            }
+        )
+    return score, cat_scores, ledger
+
+
+def ctrf_report(results: dict[str, str], ledger: list[dict]) -> dict:
+    return {
+        "results": {
+            "summary": {
+                "total": len(results),
+                "passed": sum(1 for value in results.values() if value == "passed"),
+                "failed": sum(1 for value in results.values() if value != "passed"),
+            },
+            "tests": ledger,
+        }
+    }
 
 
 def main() -> int:
@@ -87,20 +149,32 @@ def main() -> int:
     preservation = set(manifest["preservation"])
     regression = set(manifest["regression"])
     capability_keys = set(points) | preservation
+    expected_tests = capability_keys | regression
 
-    # --- Ledger integrity for capability tests ---
+    # --- Ledger integrity for capability tests and skipped gate tests ---
+    # Missing capability/preservation tests make the capability ledger
+    # untrustworthy. A missing regression test remains an invalid preservation
+    # gate below, matching the outcome taxonomy.
     missing_cap = sorted(capability_keys - set(results))
+    skipped_expected = sorted(
+        key for key in expected_tests if results.get(key) == "skipped"
+    )
     unexpected_hidden = sorted(
         k for k in results
         if k not in capability_keys and k.split("::", 1)[0] in HIDDEN_FILES
     )
-    if dupes or missing_cap or unexpected_hidden:
+    if dupes or missing_cap or skipped_expected or unexpected_hidden:
         reason = (
             f"ledger integrity: dupes={dupes} missing={missing_cap} "
-            f"unexpected_hidden={unexpected_hidden}"
+            f"skipped={skipped_expected} unexpected_hidden={unexpected_hidden}"
         )
         fail(manifest, reason)
         return 1
+
+    # The capability ledger is trustworthy from here onward. Calculate it
+    # before checking the zero-point gates so an invalid run can retain its
+    # diagnostic capability score without changing its reward.
+    score, cat_scores, ledger = capability_report(manifest, results)
 
     # --- Preservation + regression gates (0 points, must pass) ---
     gate_failures = [
@@ -119,40 +193,21 @@ def main() -> int:
                 "outcome": "invalid",
                 "reason": reason,
                 "score": None,
+                "score_if_valid": score,
                 "manifest_version": manifest["version"],
             },
-            {"results": {"summary": {"total": len(results), "passed": 0, "failed": len(gate_failures) + len(missing_gate)}, "tests": []}},
+            ctrf_report(results, ledger),
         )
-        print(f"[score] invalid: {reason}")
+        print(f"[score] invalid: {reason} score_if_valid={score}")
         return 0
 
     # --- Capability score ---
-    score = 0
-    cat_scores = {cat: 0 for cat in manifest["categories"]}
-    ledger = []
-    for key, meta in sorted(points.items()):
-        passed = results.get(key) == "passed"
-        earned = meta["points"] if passed else 0
-        score += earned
-        cat_scores[meta["category"]] += earned
-        ledger.append(
-            {
-                "id": key,
-                "tier": "hidden" if key.split("::", 1)[0] != "readme-check.test.ts" else "documentation",
-                "category": meta["category"],
-                "points": meta["points"],
-                "earned": earned,
-                "status": "passed" if passed else results.get(key, "missing"),
-            }
-        )
-
-    for key in sorted(preservation | regression):
-        ledger.append({"id": key, "tier": "regression", "points": 0, "earned": 0, "status": "passed"})
 
     reward = {
         "reward": round(score / 100.0, 4),
         "outcome": "scored",
         "score": score,
+        "score_if_valid": None,
         "total_points": manifest["total_points"],
         "categories": {
             cat: {"label": manifest["categories"][cat]["label"], "earned": cat_scores[cat], "total": manifest["categories"][cat]["points"]}
@@ -160,16 +215,7 @@ def main() -> int:
         },
         "manifest_version": manifest["version"],
     }
-    ctrf = {
-        "results": {
-            "summary": {
-                "total": len(results),
-                "passed": sum(1 for v in results.values() if v == "passed"),
-                "failed": sum(1 for v in results.values() if v != "passed"),
-            },
-            "tests": ledger,
-        }
-    }
+    ctrf = ctrf_report(results, ledger)
     write_reports(reward, ctrf)
     print(f"[score] {score}/100 scored (outcome=scored) categories={cat_scores}")
     return 0

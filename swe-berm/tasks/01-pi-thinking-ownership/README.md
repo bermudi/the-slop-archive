@@ -72,16 +72,16 @@ scores `invalid`.
 | Outcome | Meaning |
 |---|---|
 | `no_patch` / `apply_failed` / `build_failed` | operational: the run never produced a gradeable solution |
-| `verifier_error` | the test ledger is untrustworthy (missing/duplicate/skipped/unexpected tests, unparseable junit) — never awards points |
-| `invalid` | preservation/regression tests failed or went missing; existing behavior broke — no capability score |
+| `verifier_error` | the test ledger is untrustworthy (missing/duplicate/skipped/unexpected tests, unparseable junit) — never awards points or a diagnostic score |
+| `invalid` | preservation/regression tests failed; existing behavior broke — `reward` stays 0, while `score_if_valid` records the diagnostic capability score |
 | `scored` | everything ran; `score` = 0..100 (also as `reward` 0..1) |
 
 Preservation tests (17) and the regression suites (kilo, prefer-tools, tps,
 provider-balance — 79 tests) award 0 points but gate the run: any failure →
 `invalid`. Anti-gaming: the verifier restores regression test files from the
 `base` tag (weaken/delete attacks are neutralized), deletes any smuggled
-`bunfig.toml`, and the collector always combines committed + staged +
-working-tree changes.
+`bunfig.toml`, and the collector stages the final non-ignored worktree before
+emitting one base-to-final patch.
 
 ## Hidden suite composition
 
@@ -142,8 +142,10 @@ uv run python tests/gen_manifest.py \
 ```
 
 The generator hard-checks the reverse-classical property: every weighted test
-must pass on gold **and fail on base**, or it exits 1. Weights live in the
-generator's `WEIGHTS` map — that is the calibration decision point.
+must pass on gold **and fail on base**, or it exits 1. A compile error or
+missing weighted test on base is also rejected rather than being mistaken for
+an intentional behavioral failure. Weights live in the generator's `WEIGHTS`
+map — that is the calibration decision point.
 
 ### Re-run calibration
 
@@ -191,7 +193,10 @@ the first real trial, run:
 - The `tsc` build gate is dormant in the stock image (typescript is not a
   bundle dependency); type-broken patches surface as runtime test failures,
   not `build_failed`.
-- The patch collector does not capture **untracked** files; the instruction
-  says to commit, so an agent that never `git add`s a new file loses it.
-- `reward.json`: `reward` is the normalized 0..1 float, `score` the integer;
-  `reward.txt` carries the 0..1 value (matches the old binary convention).
+- The collector stages non-ignored final worktree changes before creating the
+  base-to-final patch, so new files do not require an explicit `git add` or
+  commit. Gitignored files remain excluded.
+- `reward.json`: `reward` is the normalized 0..1 float, `score` the integer
+  capability score for a valid run, and invalid runs expose their diagnostic
+  capability score as `score_if_valid`; `reward.txt` carries the 0..1 value
+  (matches the old binary convention).
