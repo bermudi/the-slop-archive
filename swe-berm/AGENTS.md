@@ -63,13 +63,14 @@ Full rationale and the failure stories behind each: TASK-DESIGN.md.
 thinking level (`fixed-defaults` + `model-thinking`); the approved fix
 (after "lgtm" at event index 62) gave `model-thinking` sole ownership.
 
-The final implementation is `agent-extensions` @ `8e1081d` — which is a
-*stack* of three commits (`f0972bb` split, `aea4772` provider-balance test
-fix, `8e1081d` review hardening). **The benchmark base is curated, not a
-single commit**: bundle @ `7f00c6a` + the unrelated `provider-balance.test.ts`
-fixture-key fix from `aea4772`, folded INTO the base so the graded patch is
-exactly one capability (8 files) and the base suite is fully green. See
-`task.toml` `[metadata]` for provenance.
+The final implementation is `agent-extensions` @ `48ac5c5` — which is a
+*stack* of four commits (`f0972bb` split, `aea4772` provider-balance test
+fix, `8e1081d` review hardening, `48ac5c5` reset/failed-load fixes).
+**The benchmark base is curated, not a single commit**: bundle @ `7f00c6a`
++ the unrelated `provider-balance.test.ts` fixture-key fix from `aea4772`,
+folded INTO the base so the graded patch is exactly one capability (9 files)
+and the base suite is fully green. See `task.toml` `[metadata]` for
+provenance.
 
 - Session transcript:
   `~/.pi/agent/sessions/--home-daniel-build-agent-extensions--/2026-08-09T06-23-37-607Z_019fe530-f087-73d9-b337-f6fe69ab1fa6.jsonl`
@@ -96,28 +97,39 @@ Anatomy (per TASK-DESIGN.md):
   missing/duplicate/skipped/unexpected tests → `verifier_error`, never a
   pass; no exit-code fallback). Regeneration and calibration are committed
   tooling: `gen_manifest.py` (gold/base junit → points.json, hard-checks
-  the reverse check) and `calibrate.py` (scores 9 deliberate partials,
+  the reverse check) and `calibrate.py` (scores 11 deliberate partials,
   bands are a contract). Operational outcomes
   (`no_patch`/`apply_failed`/`build_failed`) stay apart from capability
   scores; preservation/regression failures → `invalid` (no score).
-  Hidden = 14 fixed-defaults + 11 model-thinking + 3 model-policy + 1
+  Hidden = 16 fixed-defaults + 12 model-thinking + 3 model-policy + 1
   bundle-registration + 4 readme-check; regression = kilo, prefer-tools,
   tps, **provider-balance (now hermetic** — fixture cache key)
-- `solution/` — `solution.patch` (1508 lines, 9 files incl. new
+- `solution/` — `solution.patch` (1617 lines, 9 files incl. new
   `json-file.ts`, `model-policy.test.ts`, `bundle-registration.test.ts`) +
-  `reference/` snapshot; `solve.sh` applies the patch
+  `reference/` snapshot @ `48ac5c5`; `solve.sh` applies the patch
 
 Validated (dry-run in /tmp, no Docker):
 
-- Base (curated) scores **0/100**; reference scores **100/100** — both
-  stable across 3 runs.
-- Calibration record (manifest v2): listener-only fix = 5 (bundle-level
-  evidence), minimal ownership split = 47, gold−reset-persist = 87,
-  gold−legacy-warning = 94, gold−docs = 92, alternative structure (no
-  shared json-file.ts) = 100, disabled fixed-defaults = `invalid`
-  (preservation gate). The bundle-registration test exercises the REAL
-  entry point (index.ts), so a patch that breaks or unregisters the
-  modules can't score 100. Regression-suite attacks are neutralized: the
+- Base (curated) scores **0/100**; reference scores **100/100** —
+  reproduced across multiple dry-runs and in every calibration run.
+- Calibration record (manifest v3, reference @ `48ac5c5`): listener-only
+  fix = 5 (bundle-level evidence), minimal ownership split = 47,
+  gold−reset-persist = 89, gold−legacy-warning = 95, gold−docs = 92,
+  gold−failed-load-retry = 96, pre-`48ac5c5` reset on invalid files =
+  `invalid` (the two reset preservation gates fail), alternative structure
+  (no shared json-file.ts) = 100, disabled fixed-defaults = `invalid`
+  (preservation gate). Manifest v2 (reference @ `8e1081d`) bands were
+  5/47/87/94/92/100/invalid; the `48ac5c5` rebalance moved
+  gold−reset-persist to 89 and gold−legacy-warning to 95. The
+  `48ac5c5` reset-on-invalid and legacy-only tests are zero-point
+  preservation gates because they also pass on the curated base (base
+  reset never touches settings); weighting them would break base ≠ 0.
+  Their active model was hardened to a non-default pair
+  (`anthropic/claude-sonnet-4`) so they detect the pre-fix clobber — the
+  upstream originals passed a model equal to the fixture's saved defaults,
+  which made the settings-unchanged assertion vacuous. The
+  bundle-registration test exercises the REAL entry point (index.ts), so
+  a patch that breaks or unregisters the modules can't score 100. Regression-suite attacks are neutralized: the
   verifier restores kilo/prefer-tools/tps/provider-balance tests from the
   `base` tag before running (weaken-attack → build/invalid, delete-attack
   → neutralized); a smuggled `bunfig.toml` is deleted before the run;

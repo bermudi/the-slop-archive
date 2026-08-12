@@ -9,9 +9,12 @@ Scenarios (expected):
   base              0/100   no-op patch earns nothing
   listener-only     5/100   removing just the thinking_level_select listener
   minimal-split    47/100   ownership removed; no warnings/reset/docs
-  no-reset-persist 87/100   gold minus persist-active-model-before-delete
-  no-legacy-warning 94/100  gold minus the one-time legacy warning
+  no-reset-persist 89/100   gold minus persist-active-model-before-delete (valid pins only)
+  no-legacy-warning 95/100  gold minus the one-time legacy warning
   no-docs           92/100  gold with the base README
+  old-reset-inactive invalid gold with pre-48ac5c5 reset (persists on invalid files):
+                           the new reset preservation gates fail
+  no-retry          96/100  gold with failed loads cached by stamp again
   disable           invalid no-op fixed-defaults module (preservation gate)
   alt-structure    100/100  correct behavior, different file organization
   gold             100/100  the reference solution
@@ -59,9 +62,11 @@ EXPECTED = {
     "base": ("scored", 0),
     "listener-only": ("scored", 5),
     "minimal-split": ("scored", 47),
-    "no-reset-persist": ("scored", 87),
-    "no-legacy-warning": ("scored", 94),
+    "no-reset-persist": ("scored", 89),
+    "no-legacy-warning": ("scored", 95),
     "no-docs": ("scored", 92),
+    "old-reset-inactive": ("invalid", None),
+    "no-retry": ("scored", 96),
     "disable": ("invalid", None),
     "alt-structure": ("scored", 100),
     "gold": ("scored", 100),
@@ -170,13 +175,51 @@ def build_scenarios(work: Path, node_modules: Path) -> dict[str, Path]:
     d = make_tree(work, "no-reset-persist", gold_app, node_modules)
     p = d / "fixed-defaults.ts"
     t = p.read_text()
-    t = t.replace("""            // Save the active model before removing the pin. Otherwise the
-            // old pinned model remains in settings.json and wins at the next
-            // fresh start.
+    t = t.replace("""            // Save the active model before removing the valid pin. Otherwise
+            // the old pinned model remains in settings.json and wins at the
+            // next fresh start.
             await persistModel(ctx, model.provider, model.id);
 """, "")
     p.write_text(t)
     trees["no-reset-persist"] = d
+
+    # gold minus the 48ac5c5 inactive-file reset fix: any present file
+    # (valid or not) persists the active model before removal. The two new
+    # reset preservation tests must fail -> invalid.
+    d = make_tree(work, "old-reset-inactive", gold_app, node_modules)
+    p = d / "fixed-defaults.ts"
+    t = p.read_text()
+    t = t.replace("""            const hasModelPin =
+              loaded.error === null &&
+              loaded.override.provider !== undefined &&
+              loaded.override.model !== undefined;
+            if (!hasModelPin) {
+              store.reset();
+              return { status: "removed-inactive" };
+            }
+
+""", "")
+    p.write_text(t)
+    trees["old-reset-inactive"] = d
+
+    # gold minus the 48ac5c5 failed-load retry: cache error results by stamp
+    # again. The repaired-config retry point (4) must be lost.
+    d = make_tree(work, "no-retry", gold_app, node_modules)
+    p = d / "model-thinking.ts"
+    t = p.read_text()
+    t = t.replace("""    if (
+      this.initialized &&
+      stamp === this.cachedStamp &&
+      this.cachedResult.error === null
+    ) {
+      return this.cachedResult;
+    }
+""", """    if (this.initialized && stamp === this.cachedStamp) {
+      return this.cachedResult;
+    }
+""")
+    p.write_text(t)
+    trees["no-retry"] = d
 
     # gold minus legacy warning
     d = make_tree(work, "no-legacy-warning", gold_app, node_modules)
@@ -236,8 +279,13 @@ function unlinkIfPresent(path: string): boolean {
         t = t.replace('import {\n  describeError,\n  unlinkIfPresent,\n  writeJsonFileAtomic,\n} from "./json-file.ts";\n', "")
         t = t.replace("writeJsonFileAtomic(this.path", "writeJsonAtomic(this.path")
         t = t.replace("writeJsonFileAtomic(", "writeJsonAtomic(")
+        # 48ac5c5 dropped statSync from fixed-defaults' node:fs import
+        fs_import = {
+            "fixed-defaults.ts": 'import { readFileSync } from "node:fs";',
+            "model-thinking.ts": 'import { readFileSync, statSync } from "node:fs";',
+        }[mod]
         t = t.replace(
-            'import { readFileSync, statSync } from "node:fs";',
+            fs_import,
             'import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\n' + helpers,
         )
         p.write_text(t)

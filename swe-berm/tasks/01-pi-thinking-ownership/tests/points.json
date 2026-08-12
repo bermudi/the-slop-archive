@@ -14,11 +14,11 @@
     },
     "legacy_migration": {
       "label": "legacy thinkingLevel migration & warnings",
-      "points": 12
+      "points": 11
     },
     "malformed_config": {
       "label": "malformed model-thinking config handling",
-      "points": 17
+      "points": 20
     },
     "ownership_split": {
       "label": "fixed-defaults stops owning thinking",
@@ -26,7 +26,7 @@
     },
     "reset": {
       "label": "reset semantics",
-      "points": 16
+      "points": 14
     }
   },
   "points": {
@@ -44,7 +44,7 @@
     },
     "fixed-defaults.test.ts::reset removes the override and stops pinning": {
       "category": "reset",
-      "points": 8
+      "points": 7
     },
     "fixed-defaults.test.ts::reset without an active model leaves the pin in place": {
       "category": "reset",
@@ -64,7 +64,7 @@
     },
     "fixed-defaults.test.ts::the legacy thinkingLevel warning is emitted once, not on every read": {
       "category": "legacy_migration",
-      "points": 6
+      "points": 5
     },
     "model-policy.test.ts::a legacy pin cannot override thinking in the current or next fresh session": {
       "category": "integration",
@@ -72,7 +72,11 @@
     },
     "model-policy.test.ts::reset removes only the model pin and preserves thinking policy": {
       "category": "reset",
-      "points": 5
+      "points": 4
+    },
+    "model-thinking.test.ts::reloads a repaired config even when size and mtime are unchanged": {
+      "category": "malformed_config",
+      "points": 4
     },
     "model-thinking.test.ts::set refuses to overwrite a config with an invalid thinking level": {
       "category": "malformed_config",
@@ -80,7 +84,7 @@
     },
     "model-thinking.test.ts::set refuses to overwrite malformed config": {
       "category": "malformed_config",
-      "points": 6
+      "points": 5
     },
     "model-thinking.test.ts::status reports malformed config instead of treating it as empty": {
       "category": "malformed_config",
@@ -106,6 +110,8 @@
   "preservation": [
     "fixed-defaults.test.ts::an invalid override file is ignored and nothing is applied",
     "fixed-defaults.test.ts::provider or model alone is rejected and nothing is applied",
+    "fixed-defaults.test.ts::reset removes a legacy thinkingLevel-only override without changing settings",
+    "fixed-defaults.test.ts::reset removes an invalid override without changing settings",
     "fixed-defaults.test.ts::set without an active model warns and writes nothing",
     "fixed-defaults.test.ts::status warns when the override file is invalid",
     "fixed-defaults.test.ts::unknown subcommands show usage",
@@ -121,9 +127,9 @@
     "model-thinking.test.ts::supports max and does not remember its own clamped change"
   ],
   "provenance": {
-    "base_junit": "/tmp/base-junit.xml",
+    "base_junit": "/tmp/t01-mf/base-junit.xml",
     "generator": "tests/gen_manifest.py",
-    "gold_junit": "/tmp/gold-junit.xml",
+    "gold_junit": "/tmp/t01-mf/gold-junit.xml",
     "note": "Regenerate with gen_manifest.py; do not hand-edit weights."
   },
   "regression": [
@@ -208,5 +214,5 @@
     "tps.test.ts::sums usage across multiple assistant messages and skips others"
   ],
   "total_points": 100,
-  "version": 2
+  "version": 3
 }

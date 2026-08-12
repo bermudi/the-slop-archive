@@ -26,6 +26,12 @@ Checks performed (each is a hard error, not a warning):
   * weights sum to 100 and match the category totals.
 
 The weight map below is the calibration decision; it is intentionally frozen.
+The 2026-08-11 reference bump (48ac5c5) rebalanced it: `malformed_config`
+gained the repaired-config retry point (4), and `legacy_migration`/`reset`
+shed one point each to keep the sum at 100. The new reset-on-invalid-file
+tests from that commit are NOT weighted: they pass on the curated base too
+(base reset never touches settings), so they would break the reverse check;
+they ship as zero-point preservation gates instead.
 See the task README for the rationale and calibration record.
 """
 import argparse
@@ -40,14 +46,15 @@ WEIGHTS = {
     "model events restore the pinned override without changing thinking": ("ownership_split", 10),
     "set pins the active model and applies it immediately": ("ownership_split", 6),
     "status shows the effective pin, active model, and override path": ("ownership_split", 6),
-    "the legacy thinkingLevel warning is emitted once, not on every read": ("legacy_migration", 6),
+    "the legacy thinkingLevel warning is emitted once, not on every read": ("legacy_migration", 5),
     "set rewrites a legacy override file into the provider/model-only format": ("legacy_migration", 6),
-    "set refuses to overwrite malformed config": ("malformed_config", 6),
+    "set refuses to overwrite malformed config": ("malformed_config", 5),
     "status reports malformed config instead of treating it as empty": ("malformed_config", 5),
     "set refuses to overwrite a config with an invalid thinking level": ("malformed_config", 6),
-    "reset removes the override and stops pinning": ("reset", 8),
+    "reset removes the override and stops pinning": ("reset", 7),
     "reset without an active model leaves the pin in place": ("reset", 3),
-    "reset removes only the model pin and preserves thinking policy": ("reset", 5),
+    "reset removes only the model pin and preserves thinking policy": ("reset", 4),
+    "reloads a repaired config even when size and mtime are unchanged": ("malformed_config", 4),
     "a legacy pin cannot override thinking in the current or next fresh session": ("integration", 10),
     "the entry point registers both ownership modules and no thinking listener": ("bundle_registration", 5),
     "fixed-defaults is described as pinning provider/model only": ("documentation", 2),
@@ -58,9 +65,9 @@ WEIGHTS = {
 
 CATEGORIES = {
     "ownership_split": {"label": "fixed-defaults stops owning thinking", "points": 32},
-    "legacy_migration": {"label": "legacy thinkingLevel migration & warnings", "points": 12},
-    "malformed_config": {"label": "malformed model-thinking config handling", "points": 17},
-    "reset": {"label": "reset semantics", "points": 16},
+    "legacy_migration": {"label": "legacy thinkingLevel migration & warnings", "points": 11},
+    "malformed_config": {"label": "malformed model-thinking config handling", "points": 20},
+    "reset": {"label": "reset semantics", "points": 14},
     "integration": {"label": "cross-session integration", "points": 10},
     "bundle_registration": {"label": "bundle entry point registration", "points": 5},
     "documentation": {"label": "documentation", "points": 8},
@@ -155,7 +162,7 @@ def main() -> int:
         return 1
 
     manifest = {
-        "version": 2,
+        "version": 3,
         "total_points": 100,
         "provenance": {
             "generator": "tests/gen_manifest.py",

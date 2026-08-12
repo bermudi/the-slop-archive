@@ -32,25 +32,37 @@ task.toml         Harbor recipe config + provenance metadata
   `provider-balance.test.ts` fixture-key fix from `aea4772` folded **in**.
   The fix is unrelated to the task; folding it in makes the base suite fully
   green and the graded patch exactly one capability.
-- **Reference solution** = the bundle @ `8e1081d` (the approved
-  post-review implementation): 9 files, including new `json-file.ts`,
-  `model-policy.test.ts`, `bundle-registration.test.ts`.
+- **Reference solution** = the bundle @ `48ac5c5` (the approved
+  post-review implementation **plus** the 2026-08-11 fix commit on top): 9
+  files, including new `json-file.ts`, `model-policy.test.ts`,
+  `bundle-registration.test.ts`. The reference is a *stack* of four commits
+  (`f0972bb` split, `aea4772` provider-balance test fix folded into the
+  base, `8e1081d` review hardening, `48ac5c5` reset/failed-load fixes); the
+  graded patch is their combined delta from the curated base.
 - Machine-readable record: `task.toml [metadata]`
   (`base_commit`, `base_curation`, `solution_commit`).
 
 ## Grading contract
 
-`points.json` maps **18 named behavioral tests to 100 points** across 7
+`points.json` maps **19 named behavioral tests to 100 points** across 7
 categories. Every point test fails on the curated base and passes on the
 reference — a no-op patch scores 0 by construction. No LLM or human judge is
 involved at grading time.
 
+Manifest history: v2 graded the reference @ `8e1081d` (18 tests). The
+`48ac5c5` bump shipped v3: the repaired-config retry became a weighted point
+(`malformed_config`), and the two reset-on-inactive-file tests joined the
+preservation gate — they pass on the curated base too (base reset never
+touches settings), so weighting them would hand free points to a no-op.
+They fail on the pre-`48ac5c5` reset semantics, so reverting the fix now
+scores `invalid`.
+
 | Category | Points | What it grades |
 |---|---|---|
 | ownership_split | 32 | fixed-defaults stops owning thinking (set/events/status/legacy) |
-| legacy_migration | 12 | one-time legacy warning; `set` rewrites legacy files |
-| malformed_config | 17 | broken JSON and invalid shapes reported, never overwritten |
-| reset | 16 | persist-active-model-before-delete; no-model refusal; policy preserved |
+| legacy_migration | 11 | one-time legacy warning; `set` rewrites legacy files |
+| malformed_config | 20 | broken JSON and invalid shapes reported, never overwritten; repaired configs are retried, not cached |
+| reset | 14 | persist-active-model-before-delete (valid pins); no-model refusal; policy preserved |
 | integration | 10 | legacy pin cannot override thinking, current + next session |
 | bundle_registration | 5 | the real `index.ts` entry point registers correctly |
 | documentation | 8 | README: no thinking claim, new JSON shape, migration, fresh-session timing |
@@ -64,7 +76,7 @@ involved at grading time.
 | `invalid` | preservation/regression tests failed or went missing; existing behavior broke — no capability score |
 | `scored` | everything ran; `score` = 0..100 (also as `reward` 0..1) |
 
-Preservation tests (15) and the regression suites (kilo, prefer-tools, tps,
+Preservation tests (17) and the regression suites (kilo, prefer-tools, tps,
 provider-balance — 79 tests) award 0 points but gate the run: any failure →
 `invalid`. Anti-gaming: the verifier restores regression test files from the
 `base` tag (weaken/delete attacks are neutralized), deletes any smuggled
@@ -73,15 +85,22 @@ working-tree changes.
 
 ## Hidden suite composition
 
-Which tests ship with the reference (`8e1081d`) vs. which the rubric added:
+Which tests ship with the reference (`48ac5c5`) vs. which the rubric added:
 
 | File | Tests | Origin |
 |---|---|---|
-| `fixed-defaults.test.ts` | 14 | 12 reference + 2 added: legacy warning emitted **once**; `set` rewrites a legacy file |
-| `model-thinking.test.ts` | 11 | 10 reference + 1 added: `set` refuses a config with an invalid thinking level |
+| `fixed-defaults.test.ts` | 16 | 14 reference + 2 added: legacy warning emitted **once**; `set` rewrites a legacy file |
+| `model-thinking.test.ts` | 12 | 11 reference + 1 added: `set` refuses a config with an invalid thinking level |
 | `model-policy.test.ts` | 3 | all reference (cross-module integration) |
 | `bundle-registration.test.ts` | 1 | added — exercises the real entry point via a Proxy harness |
 | `readme-check.test.ts` | 4 | verifier-injected; 3 from scaffold (loosened phrasing) + 1 added: fresh-session timing |
+
+The two reset tests from `48ac5c5` (invalid file, legacy-only file) are
+preservation gates, not points — see the manifest history note above. Their
+active model was hardened to a non-default pair (`anthropic/claude-sonnet-4`)
+so they actually detect the pre-fix clobber; the upstream originals passed a
+model identical to the fixture's saved defaults, which made the
+settings-unchanged assertion vacuous.
 
 The added tests grade prompt-stated requirements that the reference suite did
 not pin down; the reference passes them by construction.
@@ -132,11 +151,12 @@ generator's `WEIGHTS` map — that is the calibration decision point.
 uv run python tests/calibrate.py          # needs bun + the bundle's node_modules
 ```
 
-Scores 9 deliberate scenarios (base, listener-only, minimal split, gold minus
-each of reset/warning/docs, disabled module, alternative structure, gold) and
-exits 1 if any band deviates from `EXPECTED`. Bands are part of the frozen
-rubric; if a change moves a band intentionally, update `EXPECTED` in the same
-commit as the change.
+Scores 11 deliberate scenarios (base, listener-only, minimal split, gold minus
+reset-persist / legacy-warning / docs / failed-load-retry, pre-`48ac5c5` reset
+on invalid files, disabled module, alternative structure, gold) and exits 1 if
+any band deviates from `EXPECTED`. Bands are part of the frozen rubric;
+if a change moves a band intentionally, update `EXPECTED` in the same commit as
+the change.
 
 ### Add a graded point (the full chain)
 

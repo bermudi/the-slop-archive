@@ -1,7 +1,7 @@
-diff --git a/pi-packages/bermudis-pi-goodies/README.md b/pi-packages/bermudis-pi-goodies/README.md
+diff --git a/README.md b/README.md
 index 0584c4b..cd5eaf8 100644
---- a/pi-packages/bermudis-pi-goodies/README.md
-+++ b/pi-packages/bermudis-pi-goodies/README.md
+--- a/README.md
++++ b/README.md
 @@ -11,7 +11,7 @@ extensions. One entry point, ten independent features.
  | `zed` | `/z` | Open Zed editor on the current working directory. |
  | `prefer-tools` | hook (no command) | Nudge toward modern CLIs: `rg` over `grep`, `fd` over `find`, `uv` over bare `python`/`pip`/`pytest`/`mypy`. |
@@ -78,11 +78,11 @@ index 0584c4b..cd5eaf8 100644
  
  ## Provider and balance details
  
-diff --git a/pi-packages/bermudis-pi-goodies/bundle-registration.test.ts b/pi-packages/bermudis-pi-goodies/bundle-registration.test.ts
+diff --git a/bundle-registration.test.ts b/bundle-registration.test.ts
 new file mode 100644
 index 0000000..79e72ba
 --- /dev/null
-+++ b/pi-packages/bermudis-pi-goodies/bundle-registration.test.ts
++++ b/bundle-registration.test.ts
 @@ -0,0 +1,53 @@
 +import { describe, expect, test } from "bun:test";
 +import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -137,10 +137,10 @@ index 0000000..79e72ba
 +    expect(events.get("model_select") ?? 0).toBeGreaterThanOrEqual(2);
 +  });
 +});
-diff --git a/pi-packages/bermudis-pi-goodies/fixed-defaults.test.ts b/pi-packages/bermudis-pi-goodies/fixed-defaults.test.ts
-index 8b6958c..52d4cb6 100644
---- a/pi-packages/bermudis-pi-goodies/fixed-defaults.test.ts
-+++ b/pi-packages/bermudis-pi-goodies/fixed-defaults.test.ts
+diff --git a/fixed-defaults.test.ts b/fixed-defaults.test.ts
+index 8b6958c..9040483 100644
+--- a/fixed-defaults.test.ts
++++ b/fixed-defaults.test.ts
 @@ -147,13 +147,12 @@ describe("fixed-defaults", () => {
      expect(settingsAt(settingsPath)).toEqual(original);
    });
@@ -301,7 +301,47 @@ index 8b6958c..52d4cb6 100644
      });
    });
  
-@@ -270,7 +320,7 @@ describe("fixed-defaults", () => {
+@@ -265,12 +315,47 @@ describe("fixed-defaults", () => {
+     expect(settingsAt(settingsPath)).toEqual(original);
+   });
+ 
++  test("reset removes an invalid override without changing settings", async () => {
++    const { agentDir, settingsPath, original, pi, ctx } = setup();
++    const overridePath = join(agentDir, "fixed-defaults.json");
++    writeFileSync(overridePath, "not json\n");
++    fixedDefaults(pi.api, { agentDir });
++    const handler = pi.commands.get("fixed-defaults")!;
++
++    await handler(
++      "reset",
++      context(ctx.cwd, { model: model("anthropic", "claude-sonnet-4") }),
++    );
++
++    expect(existsSync(overridePath)).toBe(false);
++    expect(settingsAt(settingsPath)).toEqual(original);
++  });
++
++  test("reset removes a legacy thinkingLevel-only override without changing settings", async () => {
++    const { agentDir, settingsPath, original, pi, ctx } = setup();
++    const overridePath = join(agentDir, "fixed-defaults.json");
++    writeFileSync(
++      overridePath,
++      `${JSON.stringify({ thinkingLevel: "max" })}\n`,
++    );
++    fixedDefaults(pi.api, { agentDir });
++    const handler = pi.commands.get("fixed-defaults")!;
++
++    await handler(
++      "reset",
++      context(ctx.cwd, { model: model("anthropic", "claude-sonnet-4") }),
++    );
++
++    expect(existsSync(overridePath)).toBe(false);
++    expect(settingsAt(settingsPath)).toEqual(original);
++  });
++
+   test("status shows the effective pin, active model, and override path", async () => {
+     const { agentDir, pi, ctx } = setup();
      writeFileSync(
        join(agentDir, "fixed-defaults.json"),
        `${JSON.stringify(
@@ -310,7 +350,7 @@ index 8b6958c..52d4cb6 100644
          null,
          2,
        )}\n`,
-@@ -279,7 +329,6 @@ describe("fixed-defaults", () => {
+@@ -279,7 +364,6 @@ describe("fixed-defaults", () => {
      const handler = pi.commands.get("fixed-defaults")!;
      const notifications: string[] = [];
  
@@ -318,7 +358,7 @@ index 8b6958c..52d4cb6 100644
      await handler(
        "",
        context(ctx.cwd, { model: model("zai", "glm-5.2"), notifications }),
-@@ -288,7 +337,10 @@ describe("fixed-defaults", () => {
+@@ -288,7 +372,10 @@ describe("fixed-defaults", () => {
      const message = notifications[0];
      expect(message).toContain("pinned provider: zai");
      expect(message).toContain("pinned model: glm-5.2");
@@ -330,7 +370,7 @@ index 8b6958c..52d4cb6 100644
      expect(message).toContain(join(agentDir, "fixed-defaults.json"));
    });
  
-@@ -344,6 +396,63 @@ describe("fixed-defaults", () => {
+@@ -344,6 +431,63 @@ describe("fixed-defaults", () => {
      expect(message).toContain("no pin active");
      expect(message).not.toContain("pinned model");
    });
@@ -394,15 +434,15 @@ index 8b6958c..52d4cb6 100644
  });
  
  function mkdirForFile(path: string): void {
-diff --git a/pi-packages/bermudis-pi-goodies/fixed-defaults.ts b/pi-packages/bermudis-pi-goodies/fixed-defaults.ts
-index cfbf0da..e1e46e8 100644
---- a/pi-packages/bermudis-pi-goodies/fixed-defaults.ts
-+++ b/pi-packages/bermudis-pi-goodies/fixed-defaults.ts
+diff --git a/fixed-defaults.ts b/fixed-defaults.ts
+index cfbf0da..8776975 100644
+--- a/fixed-defaults.ts
++++ b/fixed-defaults.ts
 @@ -4,38 +4,27 @@ import {
    type ExtensionAPI,
    type ExtensionContext,
  } from "@earendil-works/pi-coding-agent";
-+import { readFileSync, statSync } from "node:fs";
++import { readFileSync } from "node:fs";
 +import { join } from "node:path";
  import {
 -  mkdirSync,
@@ -505,7 +545,7 @@ index cfbf0da..e1e46e8 100644
  /**
   * Read/write the override file. Reads are uncached (the file is tiny and the
   * events are rare), so hand edits are picked up without a reload. Writes are
-@@ -113,27 +93,41 @@ function parseOverride(value: unknown): FixedDefaultsOverride {
+@@ -113,27 +93,43 @@ function parseOverride(value: unknown): FixedDefaultsOverride {
   */
  class DefaultsStore {
    readonly path: string;
@@ -525,6 +565,7 @@ index cfbf0da..e1e46e8 100644
        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 -        return { override: {}, error: null };
 +        return {
++          present: false,
 +          override: {},
 +          error: null,
 +          legacyThinkingLevel: false,
@@ -544,18 +585,20 @@ index cfbf0da..e1e46e8 100644
 +      }
        return {
 -        override: parseOverride(JSON.parse(raw) as unknown),
++        present: true,
 +        override: parseOverride(value),
          error: null,
 +        legacyThinkingLevel,
        };
      } catch (error) {
        const message = describeError(error);
-@@ -141,39 +135,35 @@ class DefaultsStore {
+@@ -141,61 +137,51 @@ class DefaultsStore {
          `[fixed-defaults] invalid config at ${this.path}:`,
          message,
        );
 -      return { override: {}, error: message };
 +      return {
++        present: true,
 +        override: {},
 +        error: message,
 +        legacyThinkingLevel: false,
@@ -586,27 +629,25 @@ index cfbf0da..e1e46e8 100644
    }
  
 -  reset(): boolean {
-+  exists(): boolean {
-     try {
+-    try {
 -      unlinkSync(this.path);
-+      statSync(this.path);
-       return true;
-     } catch (error) {
-       if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-       throw error;
-     }
-   }
-+
+-      return true;
+-    } catch (error) {
+-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+-      throw error;
+-    }
 +  reset(): void {
 +    // Deletion is intentionally idempotent: if another process removes the
-+    // pin after exists(), reset has still reached the requested end state.
++    // pin after it was loaded, reset has still reached the requested end state.
 +    unlinkIfPresent(this.path);
 +    this.warnedLegacyThinkingLevel = false;
-+  }
+   }
  }
  
  /** Result of reading the override file: the parsed values plus any error. */
-@@ -181,21 +171,22 @@ interface LoadResult {
+ interface LoadResult {
++  /** Whether the override file existed when it was read. */
++  present: boolean;
    override: FixedDefaultsOverride;
    /** Non-null when the file existed but failed to parse or validate. */
    error: string | null;
@@ -637,7 +678,7 @@ index cfbf0da..e1e46e8 100644
   */
  export default function fixedDefaults(
    pi: ExtensionAPI,
-@@ -207,25 +198,15 @@ export default function fixedDefaults(
+@@ -207,25 +193,15 @@ export default function fixedDefaults(
    );
    let pending = Promise.resolve();
  
@@ -669,7 +710,7 @@ index cfbf0da..e1e46e8 100644
      await settings.flush();
  
      const errors = settings.drainErrors();
-@@ -237,23 +218,47 @@ export default function fixedDefaults(
+@@ -237,23 +213,47 @@ export default function fixedDefaults(
      }
    }
  
@@ -728,7 +769,7 @@ index cfbf0da..e1e46e8 100644
      handler: async (args, ctx) => {
        const command = args.trim();
  
-@@ -267,11 +272,9 @@ export default function fixedDefaults(
+@@ -267,11 +267,9 @@ export default function fixedDefaults(
            return;
          }
  
@@ -740,7 +781,7 @@ index cfbf0da..e1e46e8 100644
          };
          try {
            store.save(override);
-@@ -283,10 +286,9 @@ export default function fixedDefaults(
+@@ -283,10 +281,9 @@ export default function fixedDefaults(
  
          try {
            // Bring settings.json in line with the new pin right away instead
@@ -754,7 +795,7 @@ index cfbf0da..e1e46e8 100644
            ctx.ui.notify(
              "Defaults saved, but applying them to settings.json failed.",
              "warning",
-@@ -295,31 +297,55 @@ export default function fixedDefaults(
+@@ -295,31 +292,74 @@ export default function fixedDefaults(
          }
  
          ctx.ui.notify(
@@ -769,6 +810,7 @@ index cfbf0da..e1e46e8 100644
 -        let removed: boolean;
 +        type ResetResult =
 +          | { status: "missing" }
++          | { status: "removed-inactive" }
 +          | { status: "no-active-model" }
 +          | {
 +              status: "removed";
@@ -782,14 +824,27 @@ index cfbf0da..e1e46e8 100644
 -          ctx.ui.notify("Failed to reset fixed defaults.", "error");
 -          return;
 +          const result = await enqueue<ResetResult>(async () => {
-+            if (!store.exists()) return { status: "missing" };
++            // Load and validate before touching settings. Invalid, legacy-only,
++            // and partial files are inactive, so remove them without replacing
++            // Pi's last selection with the currently active model.
++            const loaded = store.load();
++            if (!loaded.present) return { status: "missing" };
++
++            const hasModelPin =
++              loaded.error === null &&
++              loaded.override.provider !== undefined &&
++              loaded.override.model !== undefined;
++            if (!hasModelPin) {
++              store.reset();
++              return { status: "removed-inactive" };
++            }
 +
 +            const model = ctx.model;
 +            if (!model) return { status: "no-active-model" };
 +
-+            // Save the active model before removing the pin. Otherwise the
-+            // old pinned model remains in settings.json and wins at the next
-+            // fresh start.
++            // Save the active model before removing the valid pin. Otherwise
++            // the old pinned model remains in settings.json and wins at the
++            // next fresh start.
 +            await persistModel(ctx, model.provider, model.id);
 +            store.reset();
 +            return { status: "removed", model };
@@ -797,6 +852,11 @@ index cfbf0da..e1e46e8 100644
 +
 +          if (result.status === "missing") {
 +            ctx.ui.notify("No fixed-defaults override file to reset.", "info");
++          } else if (result.status === "removed-inactive") {
++            ctx.ui.notify(
++              "Inactive or invalid fixed-defaults override removed; settings were left unchanged.",
++              "info",
++            );
 +          } else if (result.status === "no-active-model") {
 +            ctx.ui.notify(
 +              "Cannot reset fixed defaults without an active model; the pin was left in place.",
@@ -827,7 +887,7 @@ index cfbf0da..e1e46e8 100644
          return;
        }
  
-@@ -328,11 +354,10 @@ export default function fixedDefaults(
+@@ -328,11 +368,10 @@ export default function fixedDefaults(
          return;
        }
  
@@ -840,7 +900,7 @@ index cfbf0da..e1e46e8 100644
          "",
        ];
        if (error) {
-@@ -344,14 +369,17 @@ export default function fixedDefaults(
+@@ -344,14 +383,17 @@ export default function fixedDefaults(
            lines.push(`pinned provider: ${override.provider}`);
            lines.push(`pinned model: ${override.model}`);
          }
@@ -862,10 +922,10 @@ index cfbf0da..e1e46e8 100644
        );
        const message = lines.join("\n");
  
-diff --git a/pi-packages/bermudis-pi-goodies/index.ts b/pi-packages/bermudis-pi-goodies/index.ts
+diff --git a/index.ts b/index.ts
 index a355944..884bc84 100644
---- a/pi-packages/bermudis-pi-goodies/index.ts
-+++ b/pi-packages/bermudis-pi-goodies/index.ts
+--- a/index.ts
++++ b/index.ts
 @@ -9,7 +9,7 @@
   *   - zed              /z                open Zed on cwd
   *   - prefer-tools     hook              block legacy tools (use trash/rg/fd/uv)
@@ -875,11 +935,11 @@ index a355944..884bc84 100644
   *   - kilo             provider          access Kilo Gateway models
   *   - provider-balance footer            show Kilo credits or Codex quota in the footer
   *   - tps              hook              notify tokens/sec and usage at each agent turn end
-diff --git a/pi-packages/bermudis-pi-goodies/json-file.ts b/pi-packages/bermudis-pi-goodies/json-file.ts
+diff --git a/json-file.ts b/json-file.ts
 new file mode 100644
 index 0000000..f5a5ed2
 --- /dev/null
-+++ b/pi-packages/bermudis-pi-goodies/json-file.ts
++++ b/json-file.ts
 @@ -0,0 +1,44 @@
 +import { randomUUID } from "node:crypto";
 +import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -925,11 +985,11 @@ index 0000000..f5a5ed2
 +    throw error;
 +  }
 +}
-diff --git a/pi-packages/bermudis-pi-goodies/model-policy.test.ts b/pi-packages/bermudis-pi-goodies/model-policy.test.ts
+diff --git a/model-policy.test.ts b/model-policy.test.ts
 new file mode 100644
 index 0000000..23fb3e1
 --- /dev/null
-+++ b/pi-packages/bermudis-pi-goodies/model-policy.test.ts
++++ b/model-policy.test.ts
 @@ -0,0 +1,282 @@
 +import { afterEach, describe, expect, test } from "bun:test";
 +import type {
@@ -1213,11 +1273,27 @@ index 0000000..23fb3e1
 +    });
 +  });
 +});
-diff --git a/pi-packages/bermudis-pi-goodies/model-thinking.test.ts b/pi-packages/bermudis-pi-goodies/model-thinking.test.ts
-index 11d9e76..939da17 100644
---- a/pi-packages/bermudis-pi-goodies/model-thinking.test.ts
-+++ b/pi-packages/bermudis-pi-goodies/model-thinking.test.ts
-@@ -42,12 +42,15 @@ function model(
+diff --git a/model-thinking.test.ts b/model-thinking.test.ts
+index 11d9e76..38894e8 100644
+--- a/model-thinking.test.ts
++++ b/model-thinking.test.ts
+@@ -3,7 +3,14 @@ import type {
+   ExtensionAPI,
+   ExtensionContext,
+ } from "@earendil-works/pi-coding-agent";
+-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
++import {
++  mkdtempSync,
++  readFileSync,
++  rmSync,
++  statSync,
++  utimesSync,
++  writeFileSync,
++} from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import modelThinking from "./model-thinking.ts";
+@@ -42,12 +49,15 @@ function model(
  
  function context(
    activeModel: NonNullable<ExtensionContext["model"]>,
@@ -1234,7 +1310,7 @@ index 11d9e76..939da17 100644
      },
    } as unknown as ExtensionContext;
  }
-@@ -235,6 +238,69 @@ describe("model-thinking", () => {
+@@ -235,6 +245,94 @@ describe("model-thinking", () => {
      });
    });
  
@@ -1252,6 +1328,31 @@ index 11d9e76..939da17 100644
 +    expect(notifications.some((message) => message.includes("Repair"))).toBe(
 +      true,
 +    );
++  });
++
++  test("reloads a repaired config even when size and mtime are unchanged", () => {
++    const path = temporaryConfig();
++    const unchangedMtime = 1_700_000_000;
++    const invalid = '{"providers":{"a":"????"}}\n';
++    const repaired = '{"providers":{"a":"high"}}\n';
++    expect(Buffer.byteLength(invalid)).toBe(Buffer.byteLength(repaired));
++    writeFileSync(path, invalid);
++    utimesSync(path, unchangedMtime, unchangedMtime);
++
++    const pi = new PiHarness();
++    modelThinking(pi.api, { configPath: path });
++    const ctx = context(model("a", "model"));
++
++    pi.emit("session_start", { reason: "startup" }, ctx);
++    expect(pi.level).toBe("off");
++
++    writeFileSync(path, repaired);
++    utimesSync(path, unchangedMtime, unchangedMtime);
++    expect(statSync(path).size).toBe(Buffer.byteLength(invalid));
++
++    pi.emit("session_start", { reason: "reload" }, ctx);
++
++    expect(pi.level).toBe("high");
 +  });
 +
 +  test("status reports malformed config instead of treating it as empty", async () => {
@@ -1304,10 +1405,10 @@ index 11d9e76..939da17 100644
    test("leaves unmanaged models to Pi and does not create a config", () => {
      const path = temporaryConfig();
      const pi = new PiHarness();
-diff --git a/pi-packages/bermudis-pi-goodies/model-thinking.ts b/pi-packages/bermudis-pi-goodies/model-thinking.ts
-index 94d118c..23a69a2 100644
---- a/pi-packages/bermudis-pi-goodies/model-thinking.ts
-+++ b/pi-packages/bermudis-pi-goodies/model-thinking.ts
+diff --git a/model-thinking.ts b/model-thinking.ts
+index 94d118c..0d36be1 100644
+--- a/model-thinking.ts
++++ b/model-thinking.ts
 @@ -3,15 +3,13 @@ import {
    type ExtensionAPI,
    type ExtensionContext,
@@ -1330,7 +1431,7 @@ index 94d118c..23a69a2 100644
  
  const CONFIG_FILENAME = "model-thinking.json";
  const ALL_LEVELS = [
-@@ -99,86 +97,74 @@ function fileStamp(path: string): string | undefined {
+@@ -99,86 +97,81 @@ function fileStamp(path: string): string | undefined {
    }
  }
  
@@ -1364,8 +1465,16 @@ index 94d118c..23a69a2 100644
 +      return { config: {}, error: message };
      }
  
-     if (this.initialized && stamp === this.cachedStamp) {
+-    if (this.initialized && stamp === this.cachedStamp) {
 -      return this.cachedConfig;
++    // Keep retrying a file that previously failed to load. A repair can leave
++    // its size and mtime unchanged, so an error result must not be cached by
++    // the same stamp as a successful read.
++    if (
++      this.initialized &&
++      stamp === this.cachedStamp &&
++      this.cachedResult.error === null
++    ) {
 +      return this.cachedResult;
      }
  
@@ -1446,7 +1555,7 @@ index 94d118c..23a69a2 100644
    }
  }
  
-@@ -207,8 +193,13 @@ export default function modelThinking(
+@@ -207,8 +200,13 @@ export default function modelThinking(
    );
    function apply(ctx: ExtensionContext, silent: boolean): void {
      const model = ctx.model;
@@ -1462,7 +1571,7 @@ index 94d118c..23a69a2 100644
  
      const before = pi.getThinkingLevel();
      pi.setThinkingLevel(level);
-@@ -246,10 +237,18 @@ export default function modelThinking(
+@@ -246,10 +244,18 @@ export default function modelThinking(
          const key = modelKey(model);
          const level = pi.getThinkingLevel();
          try {
@@ -1484,7 +1593,7 @@ index 94d118c..23a69a2 100644
            });
            ctx.ui.notify(`Saved ${key}: ${level}`, "info");
          } catch (error) {
-@@ -284,14 +283,19 @@ export default function modelThinking(
+@@ -284,14 +290,19 @@ export default function modelThinking(
        }
  
        const model = ctx.model;

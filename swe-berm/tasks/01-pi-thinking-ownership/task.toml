@@ -13,9 +13,11 @@ base_repo = "agent-extensions"
 bundle = "pi-packages/bermudis-pi-goodies"
 # Curated base: bundle @ 7f00c6a plus the provider-balance.test.ts fixture-key
 # fix from aea4772 (unrelated determinism fix folded INTO the base so the
-# graded patch is a single capability). Solution = bundle @ 8e1081d.
+# graded patch is a single capability). Solution = bundle @ 48ac5c5 (the
+# four-commit stack f0972bb -> aea4772 -> 8e1081d -> 48ac5c5; the last commit
+# fixes reset on inactive overrides and failed-load caching).
 base_curation = "7f00c6a + provider-balance.test.ts@aea4772"
-solution_commit = "8e1081d447c87f88db83666b71723d25b2675327"
+solution_commit = "48ac5c536f76e540588c927a5f0b785d9cbc4cfb"
 
 [environment]
 network_mode = "no-network"
