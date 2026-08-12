@@ -1,0 +1,77 @@
+schema_version = "1.3"
+artifacts = []
+
+[task]
+name = "bermudi/runtime-kernel-ownership"
+description = "Move Conversation runtime ownership out of the Telegram adapter: a concrete ConversationRuntimeHost owns Surface-backed runtime state, composition happens before Telegram intake, and the orchestration import cycle is removed."
+authors = [{ name = "bermudi", email = "github.igizp@dabg.uk" }]
+keywords = ["typescript", "bun", "refactor", "ownership", "architecture", "stabilization"]
+
+[metadata]
+base_commit = "1340493861848583e29aa0b734ba120de09b77dd"
+base_repo = "little-goblin"
+# Base = the COMMITTED tree @ 1340493 only. The 2026-08-09 "dependency map
+# panning" session's uncommitted edits (ARCHITECTURE.md + BACKLOG.md plan
+# records, README.md row, comparison.html) are excluded: they spell out the
+# accepted runtime-kernel cycle and ARE the task's gold prose. The graded
+# patch is that cycle (session event 84's "exact cut"), implementation TBD.
+base_curation = "1340493 committed tree; session doc edits excluded (prose gold)"
+solution_commit = "TBD — reference implementation not yet authored (task in groundwork)"
+session = "~/.pi/agent/sessions/--home-daniel-build-little-goblin--/2026-08-09T03-06-20-626Z_019fe47c-5252-7265-8976-88e31b990d22.jsonl"
+
+[environment]
+# image: oven/bun:1.3.7 — see environment/Dockerfile. 1.2.x cannot run the
+# base suite (vi.useFakeTimers missing; coalesce tests double-run+fail).
+network_mode = "no-network"
+build_timeout_sec = 600.0
+os = "linux"
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+
+[environment.env]
+
+[verifier]
+timeout_sec = 900.0
+network_mode = "no-network"
+environment_mode = "separate"
+
+[verifier.env]
+
+[verifier.environment]
+build_timeout_sec = 600.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+os = "linux"
+network_mode = "no-network"
+
+[[verifier.collect]]
+command = """
+set -e
+mkdir -p /logs/artifacts
+cd /app
+# base tag created in environment Dockerfile
+if git rev-parse --verify base >/dev/null 2>&1; then BASE=base; else BASE=HEAD; fi
+# Always combine committed, staged, and working-tree changes. The agent was
+# told to commit, but a mix (some committed, some not) must not lose work:
+#   committed diff:  BASE..HEAD
+#   staged diff:     HEAD..index
+#   working diff:    index..worktree
+# concatenated, they cover the full delta from base to the final tree.
+git diff --binary $BASE HEAD > /logs/artifacts/model.patch || true
+git diff --binary >> /logs/artifacts/model.patch || true
+git diff --binary --cached >> /logs/artifacts/model.patch || true
+# ensure file exists even if empty
+touch /logs/artifacts/model.patch
+"""
+timeout_sec = 30.0
+
+[agent]
+timeout_sec = 3600.0
+network_mode = "no-network"
+
+[solution]
+# reference solution is the working tree at task completion; never used at grading
+
+[solution.env]

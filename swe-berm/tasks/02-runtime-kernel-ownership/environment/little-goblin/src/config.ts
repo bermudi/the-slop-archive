@@ -1,0 +1,191 @@
+import { mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import JSON5 from "json5";
+import { ConfigFileSchema, type ExternalAgentsConfig, type McpConfig } from "./schema.ts";
+import { resolveConfigValue } from "./resolve-value.ts";
+import { sessionsDir } from "./sessions/paths.ts";
+import { piAgentDir } from "./pi-host.ts";
+import { goblinSkillsPath, personalEnvironmentSkillsPath } from "./workspace/paths.ts";
+import { memoryDir } from "./memory/paths.ts";
+import { namedAgentsRoot } from "./subagents/paths.ts";
+import { externalAgentsRoot } from "./external-agents/paths.ts";
+import { delegatedWorkRunsRoot } from "./delegated-work/paths.ts";
+
+export interface Config {
+  botToken: string;
+  allowedTgUserIds: Set<number>;
+  /** Model id — must be a key in `MODELS` (see src/agent/models.ts). */
+  modelName: string;
+  /** Poe API key. Required iff selected model uses it. */
+  poeApiKey?: string;
+  /** OpenRouter API key. Required iff selected model uses it. */
+  openrouterApiKey?: string;
+  /** OpenAI API key. Required iff selected model uses it. */
+  openaiApiKey?: string;
+  /** Anthropic API key. Required iff selected model uses it. */
+  anthropicApiKey?: string;
+  /** Z.AI Coding Plan API key. Required iff selected model uses it. */
+  zaiApiKey?: string;
+  /** OpenCode Go subscription API key. Required iff selected model uses it. */
+  opencodeApiKey?: string;
+  goblinHome: string;
+  logLevel: "debug" | "info" | "warn" | "error";
+  /** Status-line tool visibility level. See `src/tg/buffer.ts`. */
+  toolVisibility: "none" | "minimal" | "standard" | "verbose" | "debug";
+  /** Favorite model ids for /model switching. */
+  favorites: string[];
+  /** Microsoft Edge TTS voice for /voice and text_to_speech. */
+  voiceName: string;
+  /** Groq API key for voice-note ASR. Undefined when not configured. */
+  groqApiKey?: string;
+  /**
+   * Groq Whisper model for voice-note ASR. Optional on the interface so
+   * hand-built test fixtures stay valid; `loadConfig` always populates it from
+   * the schema default (`whisper-large-v3-turbo`).
+   */
+  asrModel?: "whisper-large-v3-turbo" | "whisper-large-v3";
+  /** External agent runner configuration. */
+  externalAgents?: ExternalAgentsConfig;
+  /** MCP bridge configuration. */
+  mcp?: McpConfig;
+}
+
+/**
+ * Load and validate configuration from goblin.json5.
+ * Resolution order:
+ *   1. GOBLIN_HOME env var -> use as directory
+ *   2. Default: ~/goblin
+ *
+ * Config file is read from $GOBLIN_HOME/goblin.json5.
+ * All string values are resolved via resolveConfigValue() before validation.
+ */
+export function loadConfig(): Config {
+  // Resolve goblinHome first (not from config file, but from env/default)
+  const goblinHome = process.env.GOBLIN_HOME ?? join(homedir(), ".goblin");
+  const configPath = join(goblinHome, "goblin.json5");
+
+  // Read and parse config file
+  let raw: unknown;
+  try {
+    const content = readFileSync(configPath, "utf-8");
+    raw = JSON5.parse(content);
+  } catch (err) {
+    if (err instanceof Error && "code" in err && err.code === "ENOENT") {
+      throw new Error(`Config file not found: ${configPath}`);
+    }
+    throw new Error(`Failed to parse config file: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Resolve all string values in the raw config object
+  const resolved = resolveAllStrings(raw as Record<string, unknown>);
+
+  // Validate with Zod
+  const parsed = ConfigFileSchema.safeParse(resolved);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+    throw new Error(`Config validation failed: ${issues}`);
+  }
+  const cfg = parsed.data;
+
+  // Build frozen Config object
+  const config: Config = Object.freeze({
+    botToken: cfg.botToken,
+    allowedTgUserIds: new Set(cfg.allowedUsers),
+    modelName: cfg.model,
+    poeApiKey: cfg.poeApiKey,
+    openrouterApiKey: cfg.openrouterApiKey,
+    openaiApiKey: cfg.openaiApiKey,
+    anthropicApiKey: cfg.anthropicApiKey,
+    zaiApiKey: cfg.zaiApiKey,
+    opencodeApiKey: cfg.opencodeApiKey,
+    goblinHome,
+    logLevel: cfg.logLevel,
+    toolVisibility: cfg.toolVisibility,
+    favorites: cfg.favorites ?? [],
+    voiceName: cfg.voiceName,
+    groqApiKey: cfg.groqApiKey,
+    asrModel: cfg.asrModel,
+    externalAgents: cfg.externalAgents,
+    mcp: cfg.mcp,
+  });
+
+  if (config.externalAgents) {
+    Object.freeze(config.externalAgents);
+    Object.freeze(config.externalAgents.backends);
+  }
+
+  if (config.mcp) {
+    Object.freeze(config.mcp);
+    if (config.mcp.enabled) {
+      Object.freeze(config.mcp.enabled);
+    }
+  }
+
+  return config;
+}
+
+/**
+ * Recursively resolve all string values in an object using resolveConfigValue().
+ * Handles arrays and nested objects.
+ */
+function resolveAllStrings(obj: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    result[key] = resolveValue(value);
+  }
+  return result;
+}
+
+/**
+ * Resolve a single value: strings get resolved, arrays get their strings resolved,
+ * nested objects are resolved recursively, other values pass through.
+ */
+function resolveValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return resolveConfigValue(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => resolveValue(v));
+  }
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return resolveAllStrings(value as Record<string, unknown>);
+  }
+  return value;
+}
+
+/**
+ * Ensure GOBLIN_HOME directory exists with required subdirectories.
+ * Call once at startup before any consumer tries to use the paths.
+ *
+ * Creates the canonical three-group layout:
+ *   workspace/  — user-authored prompt files and the personal execution CWD
+ *   .agents/    — deployment-wide Goblin skill catalog
+ *   state/      — machine-managed state
+ *   scratch/    — ephemeral generic subagent instance data (not a personal workdir)
+ *
+ * Per decision `config-startup-filesystem-mutation` (0007), this function is
+ * exempt from the AGENTS.md "Don't touch $GOBLIN_HOME" guardrail for
+ * directory creation. Per decision `path-helper-only-path-construction`
+ * (0008), all path construction here goes through the path-helper modules.
+ */
+export function ensureGoblinHome(cfg: Config): void {
+  const home = cfg.goblinHome;
+  const dirs = [
+    home,
+    join(home, "workspace"),
+    goblinSkillsPath(home),
+    personalEnvironmentSkillsPath(home),
+    namedAgentsRoot(home),
+    join(home, "state"),
+    sessionsDir(home),
+    memoryDir(home),
+    piAgentDir(home),
+    join(home, "scratch"),
+    externalAgentsRoot(home),
+    delegatedWorkRunsRoot(home),
+  ];
+  for (const dir of dirs) {
+    mkdirSync(dir, { recursive: true });
+  }
+}

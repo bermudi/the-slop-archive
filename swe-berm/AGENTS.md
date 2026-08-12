@@ -40,6 +40,25 @@ looking up. Do not resurrect it.
 - Design sources: DeepSWE v1/v1.1 blog posts, FrontierCode post (saved
   copies in ~/Downloads, cited in TASK-DESIGN.md).
 
+## Tooling hazards (verified 2026-08-12)
+
+- **`bun test` + tmpfs breaks `mock.module` isolation.** Verified with both
+  bun 1.2.21 (task image) and the host canary: when the app tree lives on
+  tmpfs (`/tmp`), `mock.module` from one test file leaks into other test
+  files' processes — e.g. `src/subagents/mod.test.ts`'s global
+  pi-coding-agent mock breaks `src/agent/contract.test.ts` (7 tests fail
+  with `modelRuntime.registerProvider is not a function`). On ext4
+  (`/home`, container overlay at `/app`) the same pair passes. Docker
+  sandboxes are unaffected (overlayfs root); **host dry-runs must live on
+  ext4 (`/home`), never `/tmp`**.
+- **bun ≤1.2.23 cannot run little-goblin's base suite.** The suite uses
+  `vi.useFakeTimers`, missing in the entire 1.2.x line: on 1.2.21 the
+  coalesce tests double-run and fail (24 runs for 12 tests, junit
+  duplicates every other testcase); the last 1.2.x (1.2.23) still fails
+  8/12 fake-timer tests. Pin task images to **oven/bun:1.3.7** — its
+  graded ledger is key-identical to the canary 1.3.14 reference (2503
+  file::line::name keys, 0 failures, 0 dupes).
+
 ## Red lines (carry over, enforced by Harbor config)
 
 - **Determinism.** No wall-clock, no live network, no host state in graded
@@ -139,3 +158,24 @@ Validated (dry-run in /tmp, no Docker):
 - No prose gold in the sandbox (base `grep` for fix keywords is clean).
 - Docker daemon was unavailable during this pass — `harbor run` still
   needs a final smoke test once dockerd is up.
+
+**Task 02 — scaffolding complete, gold patch pending (designer-owned):**
+`tasks/02-runtime-kernel-ownership/` — "runtime-kernel ownership" refactor
+of `little-goblin` @ `1340493`, derived from the 2026-08-09 dependency-map
+session (uncommitted docs = gold prose, excluded from base). Base suite:
+2517 pass / 0 fail on ext4 (built with bun ≥1.3.x). Image pins
+**oven/bun:1.3.7** (1.2.x can't run `vi.useFakeTimers`). Voice edge-tts
+test (`src/voice.test.ts`) calls live network via `uvx` — must be excluded
+from the graded no-network run. Verifier machinery (test.sh/score.py/
+gen_manifest.py/calibrate.py, manifest keyed `file::line::name`) validated
+and e2e-simulated on ext4 (apply → typecheck → restore → graded run →
+scored 0 with the stub manifest); `solution.patch` and `reference/` NOT
+yet authored — wait for the real final patch from the session's
+implementation instead.
+
+## Hazard: junit duplicate keys
+
+bun's junit reporter emits parametrized tests (same name in multiple
+describes) as separate testcases at different source lines; keying by
+`file::name` collides. Ledgers are keyed `file::line::name` (verified
+unique 2517/2517 in little-goblin).

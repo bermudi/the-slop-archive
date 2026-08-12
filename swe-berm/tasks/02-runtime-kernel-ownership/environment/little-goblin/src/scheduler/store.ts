@@ -1,0 +1,543 @@
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { atomicWrite } from "../fs.ts";
+import { log } from "../log.ts";
+import { schedulesPath } from "../sessions/paths.ts";
+import { surfaceId, parseSurfaceId, type Surface } from "../surface.ts";
+import {
+  MAX_AGENT_SCHEDULES,
+  type LastRunStatus,
+  type ScheduleKind,
+  type ScheduleStoreFile,
+  type ScheduleState,
+  type ScheduledTurn,
+  type PersistedScheduledTurn,
+} from "./types.ts";
+
+/**
+ * Default heartbeat interval: 30 minutes. Used by the command layer when the
+ * user enables heartbeat without specifying an interval. Defined here so the
+ * store and command surfaces agree on the default.
+ */
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000;
+
+/**
+ * Generate a short schedule id from a UUID. Mirrors `makeConversationId()` — 10
+ * hex chars (16^10 ≈ 1.1 trillion combos), fs-safe and user-typable.
+ */
+export function makeScheduleId(): string {
+  return randomUUID().replace(/-/g, "").slice(0, 10);
+}
+
+const EMPTY_STORE: ScheduleStoreFile = { schedules: [] };
+
+function pathFor(home: string): string {
+  return schedulesPath(home);
+}
+
+function encodeSurface(surface: Surface): string {
+  return surfaceId(surface);
+}
+
+function decodeSurface(
+  surfaceIdText: string | undefined,
+  legacySurface: unknown,
+  recordId: string,
+): Surface {
+  if (surfaceIdText !== undefined) {
+    try {
+      return parseSurfaceId(surfaceIdText);
+    } catch (err) {
+      throw new Error(`Schedule ${recordId} has invalid surfaceId ${surfaceIdText}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // Fallback for legacy records that persisted the full Surface object
+  // instead of a SurfaceId. This path is used by tests and any pre-migration
+  // schedules.json that has not yet been rewritten by surface-migration.ts.
+  if (legacySurface && typeof legacySurface === "object") {
+    try {
+      // surfaceId() validates the Surface shape and returns the canonical
+      // SurfaceId string. parseSurfaceId then decodes it back to a canonical
+      // Surface object, just as for first-class surfaceId records.
+      return parseSurfaceId(surfaceId(legacySurface as Surface));
+    } catch {
+      // surfaceId validation or parseSurfaceId decoding failed; fall through.
+    }
+  }
+
+  throw new Error(`Schedule ${recordId} has no surfaceId or legacy surface`);
+}
+
+function encodeTurn(s: ScheduledTurn): PersistedScheduledTurn {
+  const { surface, ...rest } = s;
+  return { ...rest, surfaceId: encodeSurface(surface) };
+}
+
+function decodeTurn(p: PersistedScheduledTurn): ScheduledTurn {
+  const { surfaceId, ...rest } = p;
+  return { ...rest, surface: decodeSurface(surfaceId, (p as { surface?: unknown }).surface, p.id) };
+}
+
+function surfaceIdOf(surface: Surface): string {
+  return surfaceId(surface);
+}
+
+/**
+ * Load the schedule store. Returns an empty store when the file is missing
+ * (ENOENT is expected — first run). Malformed JSON logs a warning and yields
+ * an empty store so the bot keeps running; everything else propagates.
+ */
+export function loadStore(home: string): ScheduleStoreFile {
+  try {
+    const raw = readFileSync(pathFor(home), "utf-8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed !== null && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>).schedules)) {
+      return parsed as ScheduleStoreFile;
+    }
+    log.warn("schedules.json has unexpected shape, treating as empty", { path: pathFor(home) });
+    return structuredClone(EMPTY_STORE);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      return structuredClone(EMPTY_STORE);
+    }
+    if (e instanceof SyntaxError) {
+      log.warn("schedules.json malformed, treating as empty", { error: e.message });
+      return structuredClone(EMPTY_STORE);
+    }
+    throw e;
+  }
+}
+
+/**
+ * Save the store atomically via `atomicWrite` (tmp + fsync + rename).
+ */
+export function saveStore(home: string, store: ScheduleStoreFile): void {
+  atomicWrite(pathFor(home), JSON.stringify(store, null, 2) + "\n");
+}
+
+/**
+ * The effective source of a schedule record. Absent/legacy records read as
+ * "user" so pre-existing schedules are cap-safe and authority-protected.
+ */
+function effectiveSource(s: ScheduledTurn): "user" | "agent" {
+  return s.source ?? "user";
+}
+
+/**
+ * Mutable schedule store. Backed by `schedulesPath(home)` with atomic writes.
+ *
+ * Operations take the owning `Surface` so that remove/pause/resume enforce
+ * surface ownership: a schedule can only be mutated from the surface that owns
+ * it. Cross-surface mutations return null/false rather than throwing.
+ *
+ * Provenance (`source`) is an authority boundary: the agent tool path may only
+ * mutate agent-owned schedules, and agent-originated transitions into `enabled`
+ * are capped by `MAX_AGENT_SCHEDULES`. The `/schedule` command path is exempt
+ * from both the cap and the source authority check.
+ */
+export class ScheduleStore {
+  private readonly generateId: () => string;
+
+  constructor(
+    private readonly home: string,
+    /**
+     * Optional id generator, primarily for tests that need to force collisions
+     * to exercise `freshId`'s fallback path. Defaults to `makeScheduleId`.
+     */
+    generateId: () => string = makeScheduleId,
+  ) {
+    this.generateId = generateId;
+  }
+
+  private read(): ScheduledTurn[] {
+    return loadStore(this.home).schedules.map(decodeTurn);
+  }
+
+  private write(schedules: ScheduledTurn[]): void {
+    saveStore(this.home, { schedules: schedules.map(encodeTurn) });
+  }
+
+  /**
+   * Count enabled schedules owned by the surface whose effective source is
+   * "agent". Used to enforce the per-surface agent cap at mutation time.
+   *
+   * When `snapshot` is provided, the count is computed over that already-loaded
+   * store so the cap check and the mutation operate on the same in-memory record
+   * list (no fresh disk read between count and write). When omitted, a fresh
+   * read is performed — used by external callers that are not mid-mutation.
+   */
+  countEnabledAgentSchedules(surface: Surface, snapshot?: ScheduledTurn[]): number {
+    const key = surfaceIdOf(surface);
+    const schedules = snapshot ?? this.read();
+    return schedules.filter(
+      (s) => surfaceIdOf(s.surface) === key && s.state === "enabled" && effectiveSource(s) === "agent",
+    ).length;
+  }
+
+  /**
+   * List every schedule owned by a surface, including enabled, disabled, and
+   * completed records. Sorted by nextRunAt for stable listing, with completed
+   * schedules sorted last.
+   */
+  listBySurface(surface: Surface): ScheduledTurn[] {
+    const key = surfaceIdOf(surface);
+    return this.read()
+      .filter((s) => surfaceIdOf(s.surface) === key)
+      .sort((a, b) => {
+        if (a.state === "completed" && b.state !== "completed") return 1;
+        if (b.state === "completed" && a.state !== "completed") return -1;
+        return a.nextRunAt.localeCompare(b.nextRunAt);
+      });
+  }
+
+  /**
+   * Look up a single schedule by id, only if owned by the given surface.
+   * Returns null when missing or owned by another surface — callers treat
+   * both the same way ("no matching schedule was found").
+   */
+  getForSurface(surface: Surface, id: string): ScheduledTurn | null {
+    const key = surfaceIdOf(surface);
+    const s = this.read().find((x) => x.id === id);
+    if (!s || surfaceIdOf(s.surface) !== key) return null;
+    return s;
+  }
+
+  /**
+   * Create a one-shot or recurring schedule. Heartbeat schedules are created
+   * via `setHeartbeat`. Retries id generation on collision.
+   *
+   * `source` defaults to `"user"` for the `/schedule` command path. The agent
+   * tool passes `"agent"` and is subject to the per-surface agent cap.
+   */
+  create(params: {
+    surface: Surface;
+    kind: Exclude<ScheduleKind, "heartbeat">;
+    prompt: string;
+    nextRunAt: string;
+    intervalMs?: number;
+    source?: "user" | "agent";
+  }): ScheduledTurn {
+    const source = params.source ?? "user";
+    const store = this.read();
+
+    if (source === "agent") {
+      const count = this.countEnabledAgentSchedules(params.surface, store);
+      if (count >= MAX_AGENT_SCHEDULES) {
+        throw new Error(
+          `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this surface. Pause or remove an existing schedule first.`,
+        );
+      }
+    }
+
+    const record: ScheduledTurn = {
+      id: this.freshId(store),
+      surface: params.surface,
+      kind: params.kind,
+      prompt: params.prompt,
+      enabled: true,
+      state: "enabled",
+      nextRunAt: params.nextRunAt,
+      intervalMs: params.intervalMs,
+      createdAt: new Date().toISOString(),
+      source,
+    };
+    store.push(record);
+    this.write(store);
+    log.info("created schedule", { id: record.id, kind: record.kind, surfaceId: surfaceIdOf(record.surface), source });
+    return record;
+  }
+
+  /**
+   * Get, create, or update the surface's heartbeat schedule. When `enabled`
+   * is true the heartbeat is set to the given interval (defaulting to 30 min)
+   * and its next run is computed from `now`. When `enabled` is false the
+   * heartbeat is disabled in place (the record is retained so status can
+   * report it).
+   *
+   * `agent` is set by the `schedule_turn` tool. When true, the heartbeat is
+   * treated as agent-owned and cannot overwrite or disable a user-owned
+   * heartbeat; agent-path `enabled:true` is also subject to the cap.
+   */
+  setHeartbeat(params: {
+    surface: Surface;
+    enabled: boolean;
+    intervalMs?: number;
+    now: string;
+    agent?: boolean;
+  }): ScheduledTurn {
+    const key = surfaceIdOf(params.surface);
+    const agent = params.agent ?? false;
+    const store = this.read();
+    const existing = store.find(
+      (s) => s.kind === "heartbeat" && surfaceIdOf(s.surface) === key,
+    );
+
+    const intervalMs = params.enabled
+      ? params.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
+      : existing?.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+
+    if (existing) {
+      // Authority: the agent path cannot overwrite or disable a user-owned heartbeat.
+      if (agent && effectiveSource(existing) === "user") {
+        throw new Error("Cannot modify a user-owned heartbeat.");
+      }
+
+      // Cap only applies when the agent is enabling a currently disabled heartbeat.
+      if (agent && params.enabled && existing.state !== "enabled") {
+        const count = this.countEnabledAgentSchedules(params.surface, store);
+        if (count >= MAX_AGENT_SCHEDULES) {
+          throw new Error(
+            `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this surface. Pause or remove an existing schedule first.`,
+          );
+        }
+      }
+
+      // Re-stamp provenance: any /schedule mutation of an existing heartbeat
+      // claims ownership for the user. This prevents the agent from undoing a
+      // user's heartbeat off/on by re-enabling or re-disabling it.
+      if (!agent) {
+        existing.source = "user";
+      }
+
+      existing.surface = params.surface;
+      existing.intervalMs = intervalMs;
+      if (params.enabled) {
+        existing.enabled = true;
+        existing.state = "enabled";
+        existing.nextRunAt = new Date(new Date(params.now).getTime() + intervalMs).toISOString();
+      } else {
+        existing.enabled = false;
+        existing.state = "disabled";
+      }
+      this.write(store);
+      return existing;
+    }
+
+    // No existing heartbeat — create only when enabling. Disabling a
+    // non-existent heartbeat is a no-op that surfaces a synthesized disabled
+    // record via the status command, but nothing is persisted here.
+    if (!params.enabled) {
+      const record: ScheduledTurn = {
+        id: this.freshId(store),
+        surface: params.surface,
+        kind: "heartbeat",
+        prompt: null,
+        enabled: false,
+        state: "disabled",
+        nextRunAt: params.now,
+        intervalMs,
+        createdAt: new Date().toISOString(),
+        source: undefined,
+      };
+      return record;
+    }
+
+    // Enabling a new heartbeat from the agent path counts toward the cap.
+    if (agent) {
+      const count = this.countEnabledAgentSchedules(params.surface, store);
+      if (count >= MAX_AGENT_SCHEDULES) {
+        throw new Error(
+          `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this surface. Pause or remove an existing schedule first.`,
+        );
+      }
+    }
+
+    const record: ScheduledTurn = {
+      id: this.freshId(store),
+      surface: params.surface,
+      kind: "heartbeat",
+      prompt: null,
+      enabled: true,
+      state: "enabled",
+      nextRunAt: new Date(new Date(params.now).getTime() + intervalMs).toISOString(),
+      intervalMs,
+      createdAt: new Date().toISOString(),
+      source: agent ? "agent" : "user",
+    };
+    store.push(record);
+    this.write(store);
+    log.info("enabled heartbeat", { id: record.id, surfaceId: key, intervalMs, source: record.source });
+    return record;
+  }
+
+  /**
+   * Read the surface's heartbeat schedule, or null if none exists.
+   */
+  getHeartbeat(surface: Surface): ScheduledTurn | null {
+    const key = surfaceIdOf(surface);
+    return (
+      this.read().find((s) => s.kind === "heartbeat" && surfaceIdOf(s.surface) === key) ?? null
+    );
+  }
+
+  /**
+   * Remove a schedule owned by the surface. Returns true if removed,
+   * false if no matching schedule exists for this surface.
+   *
+   * `agent` callers may only remove agent-owned schedules.
+   */
+  remove(surface: Surface, id: string, agent = false): boolean {
+    const key = surfaceIdOf(surface);
+    const store = this.read();
+    const idx = store.findIndex((s) => s.id === id && surfaceIdOf(s.surface) === key);
+    if (idx === -1) return false;
+    if (agent && effectiveSource(store[idx]!) === "user") return false;
+    store.splice(idx, 1);
+    this.write(store);
+    log.info("removed schedule", { id, surfaceId: key });
+    return true;
+  }
+
+  /**
+   * Pause (disable) a schedule owned by the surface.
+   *
+   * `agent` callers may only pause agent-owned schedules.
+   */
+  pause(surface: Surface, id: string, agent = false): ScheduledTurn | null {
+    return this.setState(surface, id, "disabled", agent);
+  }
+
+  /**
+   * Resume (re-enable) a schedule owned by the surface. Does not touch
+   * prompt text or interval. A completed one-shot schedule stays completed.
+   *
+   * `agent` callers may only resume agent-owned schedules, and resuming a
+   * disabled schedule is subject to the agent cap.
+   */
+  resume(surface: Surface, id: string, agent = false): ScheduledTurn | null {
+    const existing = this.getForSurface(surface, id);
+    if (!existing) return null;
+    if (existing.state === "completed") return existing;
+    return this.setState(surface, id, "enabled", agent);
+  }
+
+  private setState(surface: Surface, id: string, state: ScheduleState, agent = false): ScheduledTurn | null {
+    const key = surfaceIdOf(surface);
+    const store = this.read();
+    const s = store.find((x) => x.id === id && surfaceIdOf(x.surface) === key);
+    if (!s) return null;
+
+    // Authority: agent callers cannot mutate user-owned schedules.
+    if (agent && effectiveSource(s) === "user") return null;
+
+    // Terminal-state guard: a completed one-shot has run its single
+    // occurrence. Refuse any further lifecycle transition so `/schedule list`
+    // keeps displaying `completed` (the list requirement) rather than silently
+    // rewriting it to `disabled` via `/schedule pause`.
+    if (s.state === "completed" && state !== "completed") return s;
+
+    // Cap: agent-path transitions into enabled count toward the cap.
+    if (
+      agent &&
+      state === "enabled" &&
+      s.state !== "enabled" &&
+      this.countEnabledAgentSchedules(surface, store) >= MAX_AGENT_SCHEDULES
+    ) {
+      throw new Error(
+        `Agent schedule cap (${MAX_AGENT_SCHEDULES}) exceeded for this surface. Pause or remove an existing schedule first.`,
+      );
+    }
+
+    // Re-stamp provenance: any /schedule mutation of an existing schedule
+    // claims ownership for the user. This prevents the agent from undoing a
+    // user's pause by resuming the schedule.
+    if (!agent) {
+      s.source = "user";
+    }
+
+    s.state = state;
+    s.enabled = state === "enabled";
+    this.write(store);
+    return s;
+  }
+
+  /**
+   * Read-only list of all schedules whose nextRunAt has passed and that are
+   * currently enabled. The scheduler claims each one individually via
+   * `claimDue` so overlapping ticks do not double-dispatch.
+   */
+  listDue(now: string): ScheduledTurn[] {
+    const nowMs = new Date(now).getTime();
+    return this.read().filter(
+      (s) => s.enabled && s.state === "enabled" && new Date(s.nextRunAt).getTime() <= nowMs,
+    );
+  }
+
+  /**
+   * Atomically claim a due schedule for dispatch. For one-shot schedules the
+   * record is marked completed and disabled before dispatch. For recurring
+   * and heartbeat schedules the next run is advanced by the interval before
+   * dispatch. Returns the claimed record as it will look after dispatch
+   * starts (the prompt to run is recoverable from the pre-claim record via
+   * `getForSurface` if needed), or null if the schedule is no longer
+   * claimable (another tick claimed it, or it was paused/removed).
+   *
+   * `nextNow` is the timestamp used to advance recurring schedules, so tests
+   * can inject a deterministic clock.
+   */
+  claimDue(id: string, now: string): ScheduledTurn | null {
+    const store = this.read();
+    const s = store.find((x) => x.id === id);
+    if (!s || !s.enabled || s.state !== "enabled") return null;
+    const nowMs = new Date(now).getTime();
+    if (new Date(s.nextRunAt).getTime() > nowMs) return null;
+
+    if (s.kind === "once") {
+      s.enabled = false;
+      s.state = "completed";
+    } else {
+      const interval = s.intervalMs;
+      if (interval === undefined) {
+        // Defensive: a recurring/heartbeat record without an interval is
+        // broken; disable it rather than tight-looping.
+        s.enabled = false;
+        s.state = "disabled";
+        s.lastRun = { at: now, outcome: "error", message: "missing intervalMs" };
+      } else {
+        // Advance from the due time (not from now) so a delayed tick does not
+        // accumulate drift, but never schedule the next run in the past.
+        let nextMs = new Date(s.nextRunAt).getTime() + interval;
+        while (nextMs <= nowMs) nextMs += interval;
+        s.nextRunAt = new Date(nextMs).toISOString();
+      }
+    }
+    this.write(store);
+    return s;
+  }
+
+  /**
+   * Record the outcome of a dispatched schedule. Used by the scheduler after
+   * dispatch (or after a stale-binding skip) to persist last-run metadata.
+   *
+   * Terminal-state guard: a completed one-shot keeps `state: "completed"` even
+   * when a binding mismatch or archived outcome is recorded after the fact —
+   * the occurrence already ran, so the diagnostic outcome updates `lastRun`
+   * without rewriting the terminal lifecycle label.
+   */
+  recordRun(id: string, status: LastRunStatus): void {
+    const store = this.read();
+    const s = store.find((x) => x.id === id);
+    if (!s) return;
+    s.lastRun = status;
+    if (status.outcome === "binding-mismatch" || status.outcome === "archived") {
+      s.enabled = false;
+      if (s.state !== "completed") s.state = "disabled";
+    }
+    this.write(store);
+  }
+
+  /**
+   * Generate a unique id, retrying on the astronomically unlikely collision.
+   * After 8 collisions, fall back to a longer slice to guarantee uniqueness.
+   */
+  private freshId(store: ScheduledTurn[]): string {
+    const existing = new Set(store.map((s) => s.id));
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const id = this.generateId();
+      if (!existing.has(id)) return id;
+    }
+    // Extremely unlikely; fall back to a longer slice to guarantee uniqueness.
+    return randomUUID().replace(/-/g, "").slice(0, 16);
+  }
+}
