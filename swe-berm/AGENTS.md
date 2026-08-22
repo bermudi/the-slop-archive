@@ -184,3 +184,17 @@ bun's junit reporter emits parametrized tests (same name in multiple
 describes) as separate testcases at different source lines; keying by
 `file::name` collides. Ledgers are keyed `file::line::name` (verified
 unique 2517/2517 in little-goblin).
+
+**Task 03 — groundwork, no gold by design:**
+`tasks/03-stitch-self-update/` — add safe release-binary self-update to
+Stitch. Base is `stitch` v0.14.2 @ `8a78284`, curated only with the generated
+Cargo.lock root-package version correction (0.14.1 → 0.14.2) so `--locked`
+starts green. The source had no self-update implementation when frozen; do
+not fabricate a benchmark-only reference. Curated base verification: 850
+tests (355 unit + 495 CLI), fmt and strict clippy green. Intended hidden
+verification uses a loopback GitHub-compatible release service,
+checksum/hostile-archive fixtures, disposable executable copies, and qemu for
+aarch64; live network is forbidden. Docker caches pinned optional updater
+crates without adding them to Stitch's base manifest. Reference, hidden suite,
+100-point manifest, calibration, qemu ledger merge, and Docker smoke remain
+pending until the production patch exists.

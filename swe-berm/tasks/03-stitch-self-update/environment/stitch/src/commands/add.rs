@@ -1,0 +1,3000 @@
+use super::common::{add_error_from_action, apply_error_from_actions, print_warnings};
+use crate::config::{self, Config, ConfigError, Loaded, expand_home};
+use crate::error::StitchError;
+use crate::fsutil::{CreatedDirectory, InodeIdentity, ensure_inode_identity, inode_identity};
+use crate::linker;
+use crate::platform::Platform;
+use crate::render;
+use crate::report;
+use crate::safety;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+/// `stitch add <target-path> --source <repo-relative>`: register the target
+/// path with an explicit source — the fan-in flow (one file, many names,
+/// many homes). Nothing is moved or copied; the target path must be absent or
+/// already a link into this repo. Also used for adopt-a-link (`add` on an
+/// existing repo-pointing symlink without `--source`), where the source is
+/// the link's resolution.
+pub(crate) fn cmd_add_source(
+    root: &std::path::Path,
+    path: &str,
+    source: &str,
+    dry_run: bool,
+    json: bool,
+) -> Result<(), StitchError> {
+    let _state_lock = if dry_run {
+        None
+    } else {
+        Some(config::StateLock::exclusive(root).map_err(StitchError::from)?)
+    };
+    let mut loaded = config::ConfigSnapshot::load(root)?.loaded;
+    if !json {
+        print_warnings(&loaded);
+    }
+
+    let expanded =
+        expand_home(path).map_err(|e| StitchError::usage(format!("invalid target path: {e}")))?;
+    let raw_target = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .map_err(|e| StitchError::io_context("getting current working directory", e))?
+            .join(expanded)
+    };
+    let target_path = if raw_target
+        .components()
+        .any(|c| matches!(c, Component::ParentDir))
+    {
+        crate::linker::resolve_ancestors_with_missing(&raw_target).ok_or_else(|| {
+            StitchError::internal(format!(
+                "could not resolve {} through symlinks — refusing to guess at the path",
+                raw_target.display()
+            ))
+        })?
+    } else {
+        lexically_normalize(&raw_target)
+    };
+
+    // Which store/target owns the target directory? The store whose target
+    // is the longest ancestor of the path. Nested targets are rejected at
+    // load, so the deepest match is unambiguous. Only active targets on this
+    // host can own a path — an inactive target must not shadow an active one.
+    let platform = Platform::detect();
+    let mut owner: Option<(String, Option<String>, PathBuf)> = None; // (store, tname, target_dir)
+    for (store_name, store) in &loaded.config.stores {
+        if !platform.matches_when(&store.when) {
+            continue;
+        }
+        let candidates: Box<dyn Iterator<Item = (&str, &str)>> = if store.is_multi_target() {
+            Box::new(store.targets.iter().filter_map(|(tn, te)| {
+                if platform.matches_when(&te.when) {
+                    Some((te.target.as_str(), tn.as_str()))
+                } else {
+                    None
+                }
+            }))
+        } else {
+            Box::new(store.target.iter().map(|t| (t.as_str(), "")))
+        };
+        for (target_str, tname) in candidates {
+            let Ok(dir) = expand_home(target_str) else {
+                continue;
+            };
+            if target_path.strip_prefix(&dir).is_err() || target_path == dir {
+                continue;
+            }
+            let better = owner.as_ref().is_none_or(|(_, _, existing)| {
+                dir.components().count() > existing.components().count()
+            });
+            if better {
+                owner = Some((
+                    store_name.clone(),
+                    (!tname.is_empty()).then(|| tname.to_string()),
+                    dir,
+                ));
+            }
+        }
+    }
+    let Some((store_name, tname, target_dir)) = owner else {
+        return Err(StitchError::usage(format!(
+            "{} is not inside any store's target directory; `add --source` registers an entry \
+             on the store that owns the target directory — add that store first",
+            target_path.display()
+        )));
+    };
+    // Reject symlinked target ancestors (foreign gateway) before writing state.
+    // An absent path beneath a symlinked ancestor would be saved successfully
+    // but apply would later fail, so reject early. A symlinked $HOME itself
+    // is allowed (supported setup) — only ancestors *inside* HOME are checked.
+    {
+        let home = config::expand_home("~")?;
+        for ancestor in target_path.ancestors().skip(1) {
+            if ancestor == home {
+                continue;
+            }
+            if !ancestor.starts_with(&home) {
+                break;
+            }
+            if let Ok(meta) = std::fs::symlink_metadata(ancestor)
+                && meta.file_type().is_symlink()
+            {
+                return Err(StitchError::path_validation(format!(
+                    "target ancestor {} is a symlink; refusing to add source under it",
+                    ancestor.display()
+                )));
+            }
+        }
+    }
+    // Ambiguous ownership: two active stores/targets sharing the same target
+    // directory would silently pick the first. Detect ties and reject.
+    // Includes same-store ties (two named targets in one store claiming the
+    // same directory) as well as cross-store ties.
+    {
+        let owner_dir = &target_dir;
+        let owner_store = &store_name;
+        let owner_tname = tname.clone();
+        for (other_store, other_cfg) in &loaded.config.stores {
+            if !platform.matches_when(&other_cfg.when) {
+                continue;
+            }
+            let candidates: Vec<(String, Option<String>)> = if other_cfg.is_multi_target() {
+                other_cfg
+                    .targets
+                    .iter()
+                    .filter_map(|(tn, te)| {
+                        if platform.matches_when(&te.when) {
+                            Some((te.target.clone(), Some(tn.clone())))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            } else {
+                other_cfg.target.iter().map(|t| (t.clone(), None)).collect()
+            };
+            for (target_str, cand_tname) in candidates {
+                if other_store == owner_store && cand_tname == owner_tname {
+                    continue;
+                }
+                if let Ok(dir) = config::expand_home(&target_str)
+                    && dir == *owner_dir
+                    && target_path.strip_prefix(&dir).is_ok()
+                {
+                    let owner_label = match &owner_tname {
+                        Some(t) => format!("store '{owner_store}' target '{t}'"),
+                        None => format!("store '{owner_store}'"),
+                    };
+                    let other_label = match &cand_tname {
+                        Some(t) => format!("store '{other_store}' target '{t}'"),
+                        None => format!("store '{other_store}'"),
+                    };
+                    return Err(StitchError::path_validation(format!(
+                        "ambiguous target ownership: both {owner_label} and {other_label} claim {}",
+                        dir.display()
+                    )));
+                }
+            }
+        }
+    }
+    let rel = target_path
+        .strip_prefix(&target_dir)
+        .expect("owner check used strip_prefix")
+        .to_string_lossy()
+        .into_owned();
+
+    // The source must be a safe repo-relative fragment.
+    if !config::is_safe_fragment(source) {
+        return Err(StitchError::path_validation(format!(
+            "invalid source '{source}': sources must be repo-relative paths with no '.', '..' or leading '/'"
+        )));
+    }
+    // Check normalized form so "./.stitch/..." cannot bypass the protected-path check.
+    let normalized_source = {
+        let mut p = PathBuf::new();
+        for c in Path::new(source).components() {
+            if let Component::Normal(part) = c {
+                p.push(part);
+            }
+        }
+        p.to_string_lossy().into_owned()
+    };
+    if normalized_source == ".stitch"
+        || normalized_source.starts_with(".stitch/")
+        || normalized_source == ".git"
+        || normalized_source.starts_with(".git/")
+    {
+        return Err(StitchError::path_validation(format!(
+            "invalid source '{source}': sources must not live under .stitch/ or .git/"
+        )));
+    }
+    let source_path = root.join(source);
+    // One hop only: the source itself must not be a symlink, nor reached
+    // through one (same rule as load-time validation).
+    {
+        let mut current = root.to_path_buf();
+        for component in Path::new(source).components() {
+            let std::path::Component::Normal(part) = component else {
+                continue;
+            };
+            current.push(part);
+            match std::fs::symlink_metadata(&current) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(StitchError::path_validation(format!(
+                        "invalid source '{source}': a source must be a real repo file, not a \
+                         symlink or a path through one (one hop only)"
+                    )));
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(StitchError::usage(format!(
+                        "source '{source}' does not exist in the repo"
+                    )));
+                }
+                Err(e) => {
+                    return Err(StitchError::io_context(
+                        format!("inspecting source {}", current.display()),
+                        e,
+                    ));
+                }
+            }
+        }
+    }
+    if std::fs::symlink_metadata(&source_path).is_ok_and(|m| m.is_dir()) {
+        return Err(StitchError::usage(format!(
+            "source '{source}' is a directory; `add --source` links one file (whole-dir stores \
+             cannot declare sources)"
+        )));
+    }
+
+    // The target path must be absent or already a link into this repo —
+    // sources never override the foreign-content red line.
+    match std::fs::symlink_metadata(&target_path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if !linker::points_into_repo(&target_path, root) {
+                return Err(StitchError::conflict_foreign(
+                    &target_path,
+                    std::fs::read_link(&target_path).ok(),
+                ));
+            }
+        }
+        Ok(_) => {
+            return Err(StitchError::conflict_real(&target_path));
+        }
+        Err(e) => {
+            return Err(StitchError::io_context(
+                format!("inspecting {}", target_path.display()),
+                e,
+            ));
+        }
+    }
+
+    // Whole-dir stores cannot declare sources: the entry would silently
+    // change the store's mode under the user. This applies to both
+    // single-target and named-target whole-dir stores.
+    let store = loaded.config.stores.get(&store_name).ok_or_else(|| {
+        StitchError::unknown_store(
+            vec![store_name.clone()],
+            loaded.config.stores.keys().cloned().collect(),
+        )
+    })?;
+    let is_whole_dir = match &tname {
+        Some(t) => store.targets.get(t).is_some_and(|te| {
+            te.files.is_empty() && te.patterns.is_empty() && te.sources.is_empty()
+        }),
+        None => {
+            store.target.is_some()
+                && store.files.is_empty()
+                && store.patterns.is_empty()
+                && store.sources.is_empty()
+        }
+    };
+    if is_whole_dir {
+        return Err(StitchError::usage(format!(
+            "store '{store_name}' is a whole-directory store; whole-dir stores cannot declare \
+             sources — switch the store to file mode first (or link the file under the store dir)"
+        )));
+    }
+
+    // Candidate state: insert into the owning inventory's sources map.
+    let mut candidate = loaded.generated.clone();
+    let gen_store = candidate.stores.get_mut(&store_name).ok_or_else(|| {
+        StitchError::usage(format!(
+            "store '{store_name}' has no generated inventory in state.toml"
+        ))
+    })?;
+    let inventory_sources: &mut BTreeMap<String, String> = match &tname {
+        Some(t) => {
+            let entry = gen_store.targets.get_mut(t).ok_or_else(|| {
+                StitchError::usage(format!(
+                    "store '{store_name}' has no target '{t}' in state.toml"
+                ))
+            })?;
+            &mut entry.sources
+        }
+        None => &mut gen_store.sources,
+    };
+    if let Some(existing) = inventory_sources.get(&rel)
+        && existing != source
+    {
+        return Err(StitchError::usage(format!(
+            "'{}' is already mapped to source '{existing}' on store '{store_name}'; \
+             remove the entry first to change it",
+            rel
+        )));
+    }
+    inventory_sources.insert(rel.clone(), source.to_string());
+    config::validate_merged_with_repo(&loaded.authored, &candidate, root)?;
+    // Pattern collision: a sources key colliding with a pattern-produced link
+    // would be written successfully and fail only on the next apply. Detect
+    // here by resolving the owning target's desired links and checking for
+    // link-name collisions before persisting.
+    {
+        let empty_files: Vec<String> = Vec::new();
+        let empty_sources: BTreeMap<String, String> = BTreeMap::new();
+        let authored_store = loaded.authored.stores.get(&store_name);
+        let (files, patterns, sources): (&[String], &[String], &BTreeMap<String, String>) =
+            match &tname {
+                Some(t) => {
+                    if let Some(entry) = candidate
+                        .stores
+                        .get(&store_name)
+                        .and_then(|s| s.targets.get(t))
+                    {
+                        (&entry.files, &entry.patterns, &entry.sources)
+                    } else {
+                        (&empty_files, &empty_files, &empty_sources)
+                    }
+                }
+                None => {
+                    if let Some(entry) = candidate.stores.get(&store_name) {
+                        (&entry.files, &entry.patterns, &entry.sources)
+                    } else {
+                        (&empty_files, &empty_files, &empty_sources)
+                    }
+                }
+            };
+        let ignore: &[String] = match &tname {
+            Some(t) => authored_store
+                .and_then(|a| a.targets.get(t))
+                .map(|at| at.ignore.as_slice())
+                .unwrap_or(&[]),
+            None => authored_store.map(|a| a.ignore.as_slice()).unwrap_or(&[]),
+        };
+        let store_dir = root.join(&store_name);
+        let links =
+            crate::store::resolve_target_names(root, &store_dir, files, patterns, sources, ignore);
+        if let crate::store::LinkTargets::Files(links) = links
+            && let Err(msg) = crate::store::check_link_name_collisions(&links)
+        {
+            return Err(StitchError::path_validation(msg));
+        }
+    }
+
+    let mode = "add-source".to_string();
+    let data = report::AddData {
+        store: store_name.clone(),
+        target: collapse_home(&target_dir)?,
+        mode,
+        source: Some(source.to_string()),
+        files: vec![],
+        patterns: vec![],
+        link_created: None,
+        moved_from: None,
+        state_entry: None,
+    };
+    if dry_run {
+        if json {
+            report::write("add", data, loaded.warnings);
+        } else {
+            println!("Would register on store '{store_name}':");
+            println!(
+                "  {} ← {} (linked at {})",
+                rel,
+                source,
+                target_path.display()
+            );
+            println!("  no files are moved; run `stitch apply` to create the link");
+        }
+        return Ok(());
+    }
+
+    loaded.generated = candidate;
+    loaded.generated.save(root)?;
+    let state_entry = report::state_entry_for(&loaded.generated, &store_name);
+    if json {
+        report::write(
+            "add",
+            report::AddData {
+                state_entry,
+                ..data
+            },
+            loaded.warnings,
+        );
+    } else {
+        println!(
+            "Registered '{}' ← {} on store '{}'",
+            rel, source, store_name
+        );
+        println!(
+            "  run `stitch apply` to create the link at {}",
+            target_path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Bulk add: add multiple paths as simple stores in one invocation. Each path
+/// gets a store with default name derivation (no per-store flags). Validates
+/// all paths first (dry-run), then applies them. If any apply fails, prior
+/// successful adds are kept — the error is reported but not rolled back
+/// (matches the plan→apply philosophy: validate first, apply second).
+pub(crate) fn cmd_add_bulk(
+    root: &std::path::Path,
+    paths: &[String],
+    dry_run: bool,
+    json: bool,
+) -> Result<(), StitchError> {
+    // Phase 1: validate all paths with dry-run.
+    let mut validation_errors: Vec<(String, String)> = Vec::new();
+    for path in paths {
+        let result = if dry_run && !json {
+            cmd_add(root, path, &None, &[], &[], false, None, true, false)
+        } else {
+            suppress_stdout(|| cmd_add(root, path, &None, &[], &[], false, None, true, false))
+        };
+        if let Err(e) = result {
+            validation_errors.push((path.clone(), e.to_string()));
+        }
+    }
+    if !validation_errors.is_empty() {
+        // Report the first validation error.
+        let (path, msg) = &validation_errors[0];
+        let error = StitchError::usage(format!("bulk add validation failed for {path}: {msg}"));
+        if json {
+            let results: Vec<report::BulkAddResult> = paths
+                .iter()
+                .map(|p| {
+                    let expanded =
+                        expand_home(p).unwrap_or_else(|_| std::path::PathBuf::from(p.as_str()));
+                    let store = derive_store_name(&expanded);
+                    let err = validation_errors
+                        .iter()
+                        .find(|(ep, _)| ep == p)
+                        .map(|(_, m)| m.clone());
+                    report::BulkAddResult {
+                        path: p.clone(),
+                        store,
+                        ok: err.is_none(),
+                        error: err,
+                        dry_run,
+                    }
+                })
+                .collect();
+            let data = report::BulkAddData {
+                all_ok: false,
+                results,
+            };
+            // `write_data_error` calls `process::exit`, so in JSON mode
+            // control never returns from this call. Audit inline (matching
+            // the central runner's context for `Add`) because the runner
+            // never sees the result; the `return Err` below is the text-mode
+            // path only.
+            crate::audit::append_with_context(
+                root,
+                "add",
+                None,
+                paths.first().map(|s| s.as_str()),
+                Err(&error),
+            );
+            report::write_data_error("add", data, &error, Vec::new());
+        }
+        return Err(error);
+    }
+
+    // Detect duplicate derived store names before applying anything. Two
+    // inputs with the same basename (e.g. ~/.config/nvim and ~/nvim) would
+    // both validate against the original state but collide in Phase 2, leaving
+    // a partial bulk add despite the "validate all paths first" contract.
+    {
+        let mut seen: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let mut dup_error: Option<(String, String, String)> = None; // (store, path1, path2)
+        for path in paths {
+            let expanded =
+                expand_home(path).unwrap_or_else(|_| std::path::PathBuf::from(path.as_str()));
+            let store = derive_store_name(&expanded);
+            if let Some(prev_path) = seen.get(&store) {
+                dup_error = Some((store, prev_path.clone(), path.clone()));
+                break;
+            }
+            seen.insert(store, path.clone());
+        }
+        if let Some((store, p1, p2)) = dup_error {
+            let error = StitchError::usage(format!(
+                "bulk add conflict: paths {p1} and {p2} both derive store name '{store}'"
+            ));
+            if json {
+                let results: Vec<report::BulkAddResult> = paths
+                    .iter()
+                    .map(|p| {
+                        let expanded =
+                            expand_home(p).unwrap_or_else(|_| std::path::PathBuf::from(p.as_str()));
+                        let store_name = derive_store_name(&expanded);
+                        report::BulkAddResult {
+                            path: p.clone(),
+                            store: store_name,
+                            ok: false,
+                            error: Some(error.to_string()),
+                            dry_run,
+                        }
+                    })
+                    .collect();
+                let data = report::BulkAddData {
+                    all_ok: false,
+                    results,
+                };
+                // `write_data_error` calls `process::exit`, so in JSON mode
+                // control never returns from this call. Audit inline (matching
+                // the central runner's context for `Add`) because the runner
+                // never sees the result; the `return Err` below is the
+                // text-mode path only.
+                crate::audit::append_with_context(
+                    root,
+                    "add",
+                    None,
+                    paths.first().map(|s| s.as_str()),
+                    Err(&error),
+                );
+                report::write_data_error("add", data, &error, Vec::new());
+            }
+            return Err(error);
+        }
+    }
+
+    // Phase 2: apply all paths (if not dry-run).
+    let mut results: Vec<report::BulkAddResult> = Vec::new();
+    let mut all_ok = true;
+    for path in paths {
+        let expanded =
+            expand_home(path).unwrap_or_else(|_| std::path::PathBuf::from(path.as_str()));
+        let store = derive_store_name(&expanded);
+        let result = if dry_run {
+            // Already validated; just report what would happen.
+            Ok(())
+        } else if json {
+            // In JSON bulk mode, suppress text output from individual adds.
+            // The per-add text output goes to stdout via println!, which would
+            // corrupt the JSON envelope. Redirect stdout to /dev/null during
+            // each add, then restore it.
+            suppress_stdout(|| cmd_add(root, path, &None, &[], &[], false, None, false, false))
+        } else {
+            cmd_add(root, path, &None, &[], &[], false, None, false, false)
+        };
+        let (ok, error) = match result {
+            Ok(()) => (true, None),
+            Err(e) => {
+                all_ok = false;
+                (false, Some(e.to_string()))
+            }
+        };
+        results.push(report::BulkAddResult {
+            path: path.clone(),
+            store,
+            ok,
+            error,
+            dry_run,
+        });
+    }
+
+    if json {
+        let data = report::BulkAddData { results, all_ok };
+        if all_ok {
+            report::write("add", data, Vec::new());
+            return Ok(());
+        }
+        let error = StitchError::Mixed {
+            classes: vec![],
+            message: "bulk add: one or more paths failed".to_string(),
+        };
+        // `write_data_error` calls `process::exit`, so the central runner's
+        // audit log never runs for this path. Log here with the first path as
+        // target context (matching `command_audit_context` for `Add`).
+        crate::audit::append_with_context(
+            root,
+            "add",
+            None,
+            paths.first().map(|s| s.as_str()),
+            Err(&error),
+        );
+        report::write_data_error("add", data, &error, Vec::new());
+    }
+
+    // Text mode: per-path results already printed by cmd_add calls.
+    if !all_ok {
+        return Err(StitchError::Mixed {
+            classes: vec![],
+            message: "bulk add: one or more paths failed".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Derive the store name from a path (basename, leading dot stripped).
+fn derive_store_name(path: &std::path::Path) -> String {
+    let name = path
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unnamed".into());
+    name.strip_prefix('.').unwrap_or(&name).to_string()
+}
+
+/// Run a closure with stdout redirected to /dev/null. Used in bulk JSON mode
+/// to suppress per-add text output that would corrupt the JSON envelope.
+///
+/// The saved fd is wrapped in an RAII guard that restores stdout in `Drop`,
+/// so stdout is restored even if the closure panics. Both `dup2` calls are
+/// checked; if either fails the closure runs without suppression rather than
+/// corrupting the process's stdio state.
+fn suppress_stdout<F, T>(f: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    use std::os::unix::io::AsRawFd;
+    // Flush any buffered stdout before redirecting, so pending output goes to
+    // the real stdout, not /dev/null.
+    let _ = std::io::stdout().flush();
+    let stdout_fd = std::io::stdout().as_raw_fd();
+    // Save stdout by duplicating it.
+    let saved = unsafe { libc::dup(stdout_fd) };
+    if saved < 0 {
+        // Can't redirect — just run without suppression.
+        return f();
+    }
+    // Open /dev/null and redirect stdout to it. Keep the file handle alive
+    // for the duration of the closure so the fd stays valid.
+    let dev_null = std::fs::OpenOptions::new().write(true).open("/dev/null");
+    let null_fd = dev_null.as_ref().map(|f| f.as_raw_fd()).ok();
+
+    // RAII guard: restores stdout in Drop, panic-safe.
+    struct StdoutGuard {
+        saved_fd: i32,
+        stdout_fd: i32,
+        redirected: bool,
+    }
+    impl Drop for StdoutGuard {
+        fn drop(&mut self) {
+            if self.redirected {
+                // Best-effort restore; if dup2 fails there's nothing we can do
+                // but the saved fd is still closed to avoid leaking.
+                unsafe {
+                    libc::dup2(self.saved_fd, self.stdout_fd);
+                    libc::close(self.saved_fd);
+                }
+            } else {
+                unsafe {
+                    libc::close(self.saved_fd);
+                }
+            }
+        }
+    }
+
+    let mut guard = StdoutGuard {
+        saved_fd: saved,
+        stdout_fd,
+        redirected: false,
+    };
+    if let Some(null_fd) = null_fd {
+        // Redirect stdout to /dev/null. Check the return value; if it fails,
+        // run without suppression rather than corrupting stdio.
+        let ret = unsafe { libc::dup2(null_fd, stdout_fd) };
+        if ret >= 0 {
+            guard.redirected = true;
+        }
+    }
+    let result = f();
+    // Flush any buffered output (goes to /dev/null) before the guard restores.
+    let _ = std::io::stdout().flush();
+    drop(guard);
+    result
+}
+use crate::store;
+use std::io::Write;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::Component;
+
+/// Reverse the move step of adopt: restore the user's file/dir to its
+/// original path and clean up the store dir created for file mode.
+///
+/// The destination is revalidated immediately before rename. If the return
+/// link was repointed (or any other entry appeared), leave both that entry and
+/// the adopted data untouched rather than letting `rename` overwrite it.
+/// Restore the adopted path only while the pinned `$HOME` still resolves to
+/// the same directory. If that boundary moved, refusing cleanup is safer than
+/// restoring data through a changed pathname.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rollback_adopt_move(
+    source: &std::path::Path,
+    store_dir: &std::path::Path,
+    raw_name: &str,
+    is_dir: bool,
+    expected_identity: InodeIdentity,
+    expected_store_identity: Option<InodeIdentity>,
+    home_identity: Option<&safety::HomeIdentity>,
+    target_parents: &[CreatedDirectory],
+) -> Result<(), std::io::Error> {
+    if let Some(home_identity) = home_identity {
+        home_identity
+            .revalidate()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+    }
+    match std::fs::symlink_metadata(source) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "refusing to restore over entry that appeared at {}",
+                    source.display()
+                ),
+            ));
+        }
+        Err(error) => return Err(error),
+    }
+
+    let moved_path = if is_dir {
+        store_dir.to_path_buf()
+    } else {
+        store_dir.join(raw_name)
+    };
+    let actual = std::fs::symlink_metadata(&moved_path)?;
+    if (actual.dev(), actual.ino()) != (expected_identity.dev, expected_identity.ino) {
+        return Err(std::io::Error::other(format!(
+            "refusing to restore {} because its inode changed",
+            moved_path.display()
+        )));
+    }
+
+    // Dir mode: store_dir is the moved directory itself. File mode moves the
+    // file back, then removes only the empty store directory we created.
+    if let Some(home_identity) = home_identity {
+        home_identity
+            .revalidate()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+    }
+    std::fs::rename(&moved_path, source)?;
+    if !is_dir {
+        if let Some(expected_store_identity) = expected_store_identity {
+            let actual_store_identity = std::fs::symlink_metadata(store_dir)?;
+            if (actual_store_identity.dev(), actual_store_identity.ino())
+                != (expected_store_identity.dev, expected_store_identity.ino)
+            {
+                return Err(std::io::Error::other(format!(
+                    "refusing to remove store directory {} because its inode changed",
+                    store_dir.display()
+                )));
+            }
+        }
+        std::fs::remove_dir(store_dir)?;
+    }
+    for parent in target_parents.iter().rev() {
+        if let Some(home_identity) = home_identity {
+            home_identity
+                .revalidate()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+        }
+        let actual = std::fs::symlink_metadata(&parent.path)?;
+        if (actual.dev(), actual.ino()) != (parent.identity.dev, parent.identity.ino) {
+            return Err(std::io::Error::other(format!(
+                "refusing to remove target parent {} because its inode changed",
+                parent.path.display()
+            )));
+        }
+        match std::fs::remove_dir(&parent.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Remove links and staged renders created by an `add` attempt using their
+/// exact desired sources. A link repointed meanwhile remains untouched.
+///
+/// Cleanup is best effort only in the sense that every independent step is
+/// attempted. Its failures are returned to the user: a failed `add` must not
+/// quietly leave an unrecorded link or rendered output behind.
+fn cleanup_uncommitted_add(
+    repo_root: &std::path::Path,
+    store_name: &str,
+    new_store: &config::Store,
+    platform: &Platform,
+    home_identity: Option<&safety::HomeIdentity>,
+    target_parents: &[CreatedDirectory],
+) -> Vec<String> {
+    if let Some(home_identity) = home_identity
+        && let Err(error) = home_identity.revalidate()
+    {
+        return vec![format!(
+            "could not clean up uncommitted add because $HOME changed: {error}"
+        )];
+    }
+
+    let mut config = Config {
+        vars: std::collections::BTreeMap::new(),
+        stores: std::collections::BTreeMap::new(),
+    };
+    config
+        .stores
+        .insert(store_name.to_string(), new_store.clone());
+    let mut errors = Vec::new();
+    for entry in store::status_all(repo_root, &config, platform) {
+        match entry.status {
+            linker::LinkStatus::Linked | linker::LinkStatus::Broken(_) => {
+                match linker::remove_link_to(&entry.target, &entry.link_source, repo_root) {
+                    Ok(true) => {}
+                    Ok(false) => errors.push(format!(
+                        "could not remove uncommitted link {} because it was repointed",
+                        entry.target.display()
+                    )),
+                    Err(error) => errors.push(format!(
+                        "could not remove uncommitted link {}: {error}",
+                        entry.target.display()
+                    )),
+                }
+            }
+            linker::LinkStatus::Foreign(_) | linker::LinkStatus::Conflict(_) => {
+                errors.push(format!(
+                    "could not remove uncommitted link {} because it was replaced",
+                    entry.target.display()
+                ));
+            }
+            linker::LinkStatus::Missing => {}
+            linker::LinkStatus::StoreError(_) | linker::LinkStatus::ConfigError(_) => {
+                errors.push(format!(
+                    "could not inspect uncommitted link {} during cleanup",
+                    entry.target.display()
+                ));
+            }
+        }
+    }
+    if let Err(error) = render::remove_store_staging(repo_root, store_name) {
+        errors.push(error);
+    }
+    errors.extend(remove_created_parents(target_parents));
+    errors
+}
+
+fn discard_uncommitted_empty_file(
+    path: &std::path::Path,
+    expected_identity: InodeIdentity,
+) -> Option<String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            return Some(format!(
+                "could not inspect uncommitted file {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    let actual = InodeIdentity {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+    };
+    if actual != expected_identity {
+        return Some(format!(
+            "retained uncommitted file {} because its inode changed (now device {}, inode {})",
+            path.display(),
+            actual.dev,
+            actual.ino
+        ));
+    }
+    if !metadata.file_type().is_file() || metadata.len() != 0 || metadata.nlink() != 1 {
+        return Some(format!(
+            "retained uncommitted file {} because it is no longer an empty regular file",
+            path.display()
+        ));
+    }
+    std::fs::remove_file(path).err().map(|error| {
+        format!(
+            "could not remove uncommitted file {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn discard_uncommitted_add(
+    store_dir: &std::path::Path,
+    expected_identity: InodeIdentity,
+) -> Option<String> {
+    let metadata = match std::fs::symlink_metadata(store_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            return Some(format!(
+                "could not inspect uncommitted store directory {}: {error}",
+                store_dir.display()
+            ));
+        }
+    };
+    let actual = InodeIdentity {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+    };
+    if actual != expected_identity {
+        return Some(format!(
+            "retained uncommitted store directory {} because its inode changed (now device {}, inode {})",
+            store_dir.display(),
+            actual.dev,
+            actual.ino
+        ));
+    }
+    std::fs::remove_dir(store_dir).err().map(|error| {
+        format!(
+            "could not remove uncommitted store directory {}: {error}",
+            store_dir.display()
+        )
+    })
+}
+
+fn add_cleanup_error(primary: StitchError, errors: Vec<String>) -> StitchError {
+    if errors.is_empty() {
+        primary
+    } else {
+        StitchError::internal(format!(
+            "add failed ({primary}); cleanup also failed: {}. Inspect the listed paths before retrying.",
+            errors.join("; ")
+        ))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rollback_add_to_store(
+    root: &std::path::Path,
+    source: &std::path::Path,
+    destination: &std::path::Path,
+    destination_identity: InodeIdentity,
+    created_parents: &[CreatedDirectory],
+    home_identity: Option<&safety::HomeIdentity>,
+    target_parents: &[CreatedDirectory],
+    link_created: bool,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if let Some(home_identity) = home_identity
+        && let Err(error) = home_identity.revalidate()
+    {
+        return vec![format!(
+            "could not roll back adopted file because $HOME changed: {error}"
+        )];
+    }
+    if link_created {
+        match linker::remove_link_to(source, destination, root) {
+            Ok(true) => {}
+            Ok(false) => {
+                errors.push(format!(
+                    "could not remove uncommitted link {} because it no longer points at {}",
+                    source.display(),
+                    destination.display()
+                ));
+                return errors;
+            }
+            Err(error) => {
+                errors.push(format!(
+                    "could not remove uncommitted link {}: {error}",
+                    source.display()
+                ));
+                return errors;
+            }
+        }
+    } else if source.symlink_metadata().is_ok() {
+        errors.push(format!(
+            "refusing to restore over entry that appeared at {}",
+            source.display()
+        ));
+        return errors;
+    }
+
+    if link_created && source.symlink_metadata().is_ok() {
+        errors.push(format!(
+            "refusing to restore over entry that appeared at {}",
+            source.display()
+        ));
+        return errors;
+    }
+
+    match inode_identity(destination) {
+        Ok(identity) if identity == destination_identity => {}
+        Ok(identity) => {
+            errors.push(format!(
+                "refusing to restore {} because its inode changed (was device {}, inode {}; now device {}, inode {})",
+                source.display(),
+                destination_identity.dev,
+                destination_identity.ino,
+                identity.dev,
+                identity.ino
+            ));
+            return errors;
+        }
+        Err(error) => {
+            errors.push(format!(
+                "could not verify adopted file {} before restore: {error}",
+                destination.display()
+            ));
+            return errors;
+        }
+    }
+
+    if let Some(home_identity) = home_identity
+        && let Err(error) = home_identity.revalidate()
+    {
+        errors.push(format!(
+            "could not roll back adopted file because $HOME changed: {error}"
+        ));
+        return errors;
+    }
+    if let Err(error) = std::fs::rename(destination, source) {
+        errors.push(format!(
+            "could not restore {} from {}: {error}",
+            source.display(),
+            destination.display()
+        ));
+        return errors;
+    }
+
+    if let Some(home_identity) = home_identity
+        && let Err(error) = home_identity.revalidate()
+    {
+        errors.push(format!(
+            "could not clean up adopted file parents because $HOME changed: {error}"
+        ));
+        return errors;
+    }
+    errors.extend(remove_created_parents(created_parents));
+    errors.extend(remove_created_parents(target_parents));
+    errors
+}
+
+fn remove_created_parents(created: &[CreatedDirectory]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for parent in created.iter().rev() {
+        match inode_identity(&parent.path) {
+            Ok(identity) if identity == parent.identity => {}
+            Ok(identity) => {
+                errors.push(format!(
+                    "retained transaction-created directory {} because its inode changed (was device {}, inode {}; now device {}, inode {})",
+                    parent.path.display(),
+                    parent.identity.dev,
+                    parent.identity.ino,
+                    identity.dev,
+                    identity.ino
+                ));
+                continue;
+            }
+            Err(error) => {
+                errors.push(format!(
+                    "could not verify transaction-created directory {} before cleanup: {error}",
+                    parent.path.display()
+                ));
+                continue;
+            }
+        }
+        match std::fs::remove_dir(&parent.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => errors.push(format!(
+                "could not remove transaction-created directory {}: {error}",
+                parent.path.display()
+            )),
+        }
+    }
+    errors
+}
+
+/// Strip setuid/setgid/sticky bits from an adopted path after it has been
+/// moved into the repository. `rename(2)` preserves mode bits, so a file with
+/// setuid/setgid would land in the repo carrying privileged bits — a surprise
+/// for a dotfiles repo that gets cloned or pushed (git does not preserve these
+/// bits across clone anyway, so keeping them is misleading rather than
+/// useful). Dotfiles do not legitimately need setuid/setgid; stripping is the
+/// defensive default. Returns a warning string if the bits were present and
+/// stripped, so `add` can tell the user what happened. Errors are reported as
+/// warnings (the adopt already succeeded; failing to chmod is not data loss).
+fn strip_privileged_bits(path: &std::path::Path) -> Option<String> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+    // Don't follow symlinks — chmod on a symlink is a no-op on Linux anyway.
+    if meta.file_type().is_symlink() {
+        return None;
+    }
+    let is_dir = meta.file_type().is_dir();
+    let mode = meta.mode();
+    // For files, strip setuid, setgid, and sticky — these are almost always
+    // unintentional on dotfiles and git drops them on clone anyway.
+    // For directories, only strip setuid and sticky; setgid on directories
+    // (0o2000) is a legitimate and common configuration that makes new files
+    // inherit the directory's group, and git does preserve it via
+    // `core.sharedRepository`.
+    let mask = if is_dir { 0o5000 } else { 0o7000 }; // setuid | sticky (dirs); all three (files)
+    let privileged = mode & mask;
+    if privileged == 0 {
+        return None;
+    }
+    let cleaned = mode & !mask;
+    match std::fs::set_permissions(path, std::fs::Permissions::from_mode(cleaned)) {
+        Ok(()) => Some(format!(
+            "stripped privileged bits (0o{:o}) from adopted {} — \
+             dotfiles do not need them and git would drop them on clone anyway",
+            privileged,
+            path.display()
+        )),
+        Err(e) => Some(format!(
+            "warning: could not strip privileged bits from {}: {e}",
+            path.display()
+        )),
+    }
+}
+
+fn validate_store_destination_parent(
+    store_dir: &std::path::Path,
+    parent: &std::path::Path,
+) -> Result<(), StitchError> {
+    let relative = parent.strip_prefix(store_dir).map_err(|_| {
+        StitchError::path_validation(format!(
+            "store destination parent {} escapes store {}",
+            parent.display(),
+            store_dir.display()
+        ))
+    })?;
+    let mut current = store_dir.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(StitchError::path_validation(format!(
+                "store destination parent {} contains an unsafe path component",
+                parent.display()
+            )));
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(StitchError::conflict_foreign(
+                    current.clone(),
+                    std::fs::read_link(&current).ok(),
+                ));
+            }
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                return Err(StitchError::conflict_real(current));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(StitchError::io_context(
+                    format!("inspecting store destination parent {}", current.display()),
+                    error,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn prepare_store_destination_parent(
+    store_dir: &std::path::Path,
+    parent: &std::path::Path,
+) -> Result<Vec<CreatedDirectory>, StitchError> {
+    let relative = parent.strip_prefix(store_dir).map_err(|_| {
+        StitchError::path_validation(format!(
+            "store destination parent {} escapes store {}",
+            parent.display(),
+            store_dir.display()
+        ))
+    })?;
+    let mut current = store_dir.to_path_buf();
+    let mut created = Vec::new();
+
+    // Any failure after creating a parent must remove only the directories
+    // created by this transaction. In particular, never leave a nested empty
+    // path behind after a config/home revalidation or ancestry conflict.
+    macro_rules! fail {
+        ($primary:expr) => {
+            return Err(add_cleanup_error(
+                $primary,
+                remove_created_parents(&created),
+            ));
+        };
+    }
+
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            fail!(StitchError::path_validation(format!(
+                "store destination parent {} contains an unsafe path component",
+                parent.display()
+            )));
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                fail!(StitchError::conflict_foreign(
+                    current.clone(),
+                    std::fs::read_link(&current).ok(),
+                ));
+            }
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                fail!(StitchError::internal(format!(
+                    "store destination parent {} is not a directory",
+                    current.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Do not use create_dir_all: an ancestor can be replaced by a
+                // symlink between these checks and the syscall.
+                if let Err(error) = std::fs::create_dir(&current) {
+                    fail!(StitchError::io_context(
+                        format!("creating store destination parent {}", current.display()),
+                        error,
+                    ));
+                }
+                match std::fs::symlink_metadata(&current) {
+                    Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+                        created.push(CreatedDirectory {
+                            path: current.clone(),
+                            identity: InodeIdentity {
+                                dev: meta.dev(),
+                                ino: meta.ino(),
+                            },
+                        });
+                    }
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        fail!(StitchError::conflict_foreign(
+                            current.clone(),
+                            std::fs::read_link(&current).ok(),
+                        ));
+                    }
+                    Ok(_) => {
+                        fail!(StitchError::internal(format!(
+                            "store destination parent {} is not a directory after creation",
+                            current.display()
+                        )));
+                    }
+                    Err(error) => {
+                        fail!(StitchError::io_context(
+                            format!("rechecking store destination parent {}", current.display()),
+                            error,
+                        ));
+                    }
+                }
+            }
+            Err(error) => {
+                fail!(StitchError::io_context(
+                    format!("inspecting store destination parent {}", current.display()),
+                    error,
+                ));
+            }
+        }
+    }
+    Ok(created)
+}
+
+fn target_parent_candidates(target: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut missing = Vec::new();
+    let mut current = target.parent();
+    while let Some(path) = current {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(path.to_path_buf());
+                current = path.parent();
+            }
+            Err(_) => break,
+        }
+    }
+    missing
+}
+
+fn prepare_target_parents(
+    target: &std::path::Path,
+    root: &std::path::Path,
+    pinned_hash: &str,
+    home_identity: &safety::HomeIdentity,
+) -> Result<Vec<CreatedDirectory>, StitchError> {
+    let mut candidates = target_parent_candidates(target);
+    candidates.sort_by_key(|path| path.components().count());
+    let mut created = Vec::new();
+
+    for path in candidates {
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(add_cleanup_error(
+                    StitchError::conflict_foreign(path.clone(), std::fs::read_link(&path).ok()),
+                    remove_created_parents(&created),
+                ));
+            }
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                return Err(add_cleanup_error(
+                    StitchError::conflict_real(path.clone()),
+                    remove_created_parents(&created),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if let Err(error) = revalidate_add_boundaries(root, pinned_hash, home_identity) {
+                    return Err(add_cleanup_error(error, remove_created_parents(&created)));
+                }
+                if let Err(error) = std::fs::create_dir(&path) {
+                    return Err(add_cleanup_error(
+                        StitchError::io_context(
+                            format!("creating target parent {}", path.display()),
+                            error,
+                        ),
+                        remove_created_parents(&created),
+                    ));
+                }
+                match inode_identity(&path) {
+                    Ok(identity) => created.push(CreatedDirectory { path, identity }),
+                    Err(error) => {
+                        return Err(add_cleanup_error(error, remove_created_parents(&created)));
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(add_cleanup_error(
+                    StitchError::io_context(
+                        format!("inspecting target parent {}", path.display()),
+                        error,
+                    ),
+                    remove_created_parents(&created),
+                ));
+            }
+        }
+    }
+    Ok(created)
+}
+
+fn revalidate_add_boundaries(
+    root: &std::path::Path,
+    pinned_hash: &str,
+    home_identity: &safety::HomeIdentity,
+) -> Result<(), StitchError> {
+    let found = config::revalidate_config_hash(root)?;
+    if found != pinned_hash {
+        return Err(StitchError::plan_stale(format!(
+            "config changed while preparing add (pinned {pinned_hash}, found {found})"
+        )));
+    }
+    home_identity
+        .revalidate()
+        .map_err(|error| StitchError::internal(error.to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_add_to_store(
+    root: &std::path::Path,
+    loaded: &mut Loaded,
+    source: &std::path::Path,
+    raw_name: &str,
+    store_name: &str,
+    pinned_hash: &str,
+    home_identity: Option<&safety::HomeIdentity>,
+    dry_run: bool,
+    json: bool,
+) -> Result<(), StitchError> {
+    let valid: Vec<String> = loaded.config.stores.keys().cloned().collect();
+    let store = loaded
+        .config
+        .stores
+        .get(store_name)
+        .ok_or_else(|| StitchError::unknown_store(vec![store_name.to_string()], valid))?;
+    let generated = loaded.generated.stores.get(store_name).ok_or_else(|| {
+        StitchError::usage(format!(
+            "store '{store_name}' has no generated inventory to extend"
+        ))
+    })?;
+    if store.is_multi_target() || !generated.targets.is_empty() {
+        return Err(StitchError::usage(format!(
+            "store '{store_name}' has named targets; --to currently supports single-target stores only"
+        )));
+    }
+    if generated.target.is_none() || (generated.files.is_empty() && generated.patterns.is_empty()) {
+        return Err(StitchError::usage(format!(
+            "store '{store_name}' is not an explicit file-mode store"
+        )));
+    }
+    let platform = Platform::detect();
+    if !platform.matches_when(&store.when) {
+        return Err(StitchError::usage(format!(
+            "store '{store_name}' is skipped on this platform"
+        )));
+    }
+
+    let metadata = std::fs::symlink_metadata(source).map_err(|error| {
+        StitchError::io_context(format!("inspecting {}", source.display()), error)
+    })?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(StitchError::usage(format!(
+            "{} must be an existing regular file for --to",
+            source.display()
+        )));
+    }
+    if metadata.nlink() > 1 {
+        return Err(StitchError::usage(format!(
+            "{} is hard-linked; refusing to leave another path able to modify repo content",
+            source.display()
+        )));
+    }
+    let source_identity = InodeIdentity {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+    };
+
+    let target_str = store
+        .target
+        .as_deref()
+        .ok_or_else(|| StitchError::usage(format!("store '{store_name}' has no target")))?;
+    let target_root = config::normalized_target_path(target_str)?;
+    let source_resolved = source.canonicalize().map_err(|error| {
+        StitchError::io_context(format!("resolving {}", source.display()), error)
+    })?;
+    let repo_resolved = root.canonicalize().map_err(|error| {
+        StitchError::io_context(format!("resolving repository {}", root.display()), error)
+    })?;
+    if source_resolved.starts_with(&repo_resolved) {
+        return Err(StitchError::usage(format!(
+            "{} is inside the stitch repository; --to only adopts files from outside the repository",
+            source.display()
+        )));
+    }
+    let relative = source_resolved.strip_prefix(&target_root).map_err(|_| {
+        StitchError::usage(format!(
+            "{} is not inside store '{store_name}' target {}",
+            source.display(),
+            target_root.display()
+        ))
+    })?;
+    let relative = relative.to_str().ok_or_else(|| {
+        StitchError::path_validation(format!("{} is not valid UTF-8", relative.display()))
+    })?;
+    if relative.is_empty() {
+        return Err(StitchError::usage(
+            "--to requires a file below the store target",
+        ));
+    }
+    config::validate_fragments(
+        &[relative.to_string()],
+        &[],
+        &format!("store '{store_name}'"),
+    )?;
+
+    let store_dir = root.join(store_name);
+    if !linker::is_real_directory(&store_dir) {
+        return Err(StitchError::internal(format!(
+            "store directory '{}' is missing, symlinked, or not a directory",
+            store_dir.display()
+        )));
+    }
+    let target_path = config::expand_home(target_str)?;
+    let entry = render::resolve_entry(relative);
+    let target = target_path.join(&entry.link_rel);
+    if let Err(action) = store::preflight_add_target(root, &target_path, &target) {
+        return Err(add_error_from_action(&action));
+    }
+    let destination = store_dir.join(relative);
+    if destination.symlink_metadata().is_ok() {
+        return Err(StitchError::internal(format!(
+            "store entry '{}' already exists",
+            destination.display()
+        )));
+    }
+    let mut template_peer_os = destination.as_os_str().to_os_string();
+    template_peer_os.push(".tmpl");
+    let template_peer = std::path::PathBuf::from(template_peer_os);
+    if template_peer.symlink_metadata().is_ok() {
+        return Err(StitchError::path_validation(format!(
+            "adding '{relative}' would collide with template source '{}'",
+            template_peer.display()
+        )));
+    }
+
+    let mut candidate_generated = loaded.generated.clone();
+    let candidate_entry = candidate_generated
+        .stores
+        .get_mut(store_name)
+        .expect("generated store checked above");
+    if !candidate_entry.files.iter().any(|file| file == relative) {
+        candidate_entry.files.push(relative.to_string());
+    }
+    config::validate_merged_with_repo(&loaded.authored, &candidate_generated, root)?;
+    let mut candidate_store = store.clone();
+    if !candidate_store.files.iter().any(|file| file == relative) {
+        candidate_store.files.push(relative.to_string());
+    }
+
+    if dry_run {
+        if let Some(parent) = destination.parent() {
+            validate_store_destination_parent(&store_dir, parent)?;
+        }
+        let data = report::AddData {
+            store: store_name.to_string(),
+            target: target_str.to_string(),
+            mode: "add-to-store".into(),
+            source: Some(collapse_home(source)?),
+            files: vec![relative.to_string()],
+            patterns: Vec::new(),
+            link_created: None,
+            moved_from: None,
+            state_entry: None,
+        };
+        if json {
+            report::write("add", data, loaded.warnings.clone());
+        } else {
+            println!("Would add to store '{store_name}':");
+            println!("  {} → {}", source.display(), destination.display());
+            println!("  then symlink back to {}", target.display());
+        }
+        return Ok(());
+    }
+
+    let inventory_errors = safety::validate_inventory(root, &loaded.config);
+    if let Some(error) = inventory_errors.first() {
+        return Err(StitchError::path_validation(error.to_string()));
+    }
+    revalidate_add_boundaries(
+        root,
+        pinned_hash,
+        home_identity.expect("real add captured $HOME identity"),
+    )?;
+    let created_parents = destination
+        .parent()
+        .map(|parent| prepare_store_destination_parent(&store_dir, parent))
+        .transpose()?
+        .unwrap_or_default();
+    if let Err(error) = revalidate_add_boundaries(
+        root,
+        pinned_hash,
+        home_identity.expect("real add captured $HOME identity"),
+    ) {
+        return Err(add_cleanup_error(
+            error,
+            remove_created_parents(&created_parents),
+        ));
+    }
+    let target_parents = match prepare_target_parents(
+        &target,
+        root,
+        pinned_hash,
+        home_identity.expect("real add captured $HOME identity"),
+    ) {
+        Ok(parents) => parents,
+        Err(error) => {
+            let cleanup_errors = remove_created_parents(&created_parents);
+            return Err(add_cleanup_error(error, cleanup_errors));
+        }
+    };
+    if let Err(error) = revalidate_add_boundaries(
+        root,
+        pinned_hash,
+        home_identity.expect("real add captured $HOME identity"),
+    ) {
+        let mut cleanup_errors = remove_created_parents(&created_parents);
+        cleanup_errors.extend(remove_created_parents(&target_parents));
+        return Err(add_cleanup_error(error, cleanup_errors));
+    }
+    if let Err(error) =
+        ensure_inode_identity(source, source_identity, "source changed before adoption")
+    {
+        let mut cleanup_errors = remove_created_parents(&created_parents);
+        cleanup_errors.extend(remove_created_parents(&target_parents));
+        return Err(add_cleanup_error(error, cleanup_errors));
+    }
+    if let Err(error) = std::fs::rename(source, &destination) {
+        let mut cleanup_errors = remove_created_parents(&created_parents);
+        cleanup_errors.extend(remove_created_parents(&target_parents));
+        return Err(add_cleanup_error(
+            StitchError::io_context(
+                format!("moving {} to {}", source.display(), destination.display()),
+                error,
+            ),
+            cleanup_errors,
+        ));
+    }
+
+    let destination_identity = match inode_identity(&destination) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return Err(add_cleanup_error(
+                error,
+                rollback_add_to_store(
+                    root,
+                    source,
+                    &destination,
+                    source_identity,
+                    &created_parents,
+                    home_identity,
+                    &target_parents,
+                    false,
+                ),
+            ));
+        }
+    };
+    if destination_identity != source_identity {
+        let primary = StitchError::internal(format!(
+            "adopted file {} changed identity during the move",
+            source.display()
+        ));
+        return Err(add_cleanup_error(
+            primary,
+            rollback_add_to_store(
+                root,
+                source,
+                &destination,
+                source_identity,
+                &created_parents,
+                home_identity,
+                &target_parents,
+                false,
+            ),
+        ));
+    }
+    if let Err(error) = revalidate_add_boundaries(
+        root,
+        pinned_hash,
+        home_identity.expect("real add captured $HOME identity"),
+    ) {
+        return Err(add_cleanup_error(
+            error,
+            rollback_add_to_store(
+                root,
+                source,
+                &destination,
+                source_identity,
+                &created_parents,
+                home_identity,
+                &target_parents,
+                false,
+            ),
+        ));
+    }
+    if !store::store_resolves_source(root, &store_dir, &candidate_store, relative) {
+        let primary = StitchError::path_validation(format!(
+            "adopted source '{relative}' is ignored or otherwise does not resolve in store '{store_name}'"
+        ));
+        return Err(add_cleanup_error(
+            primary,
+            rollback_add_to_store(
+                root,
+                source,
+                &destination,
+                source_identity,
+                &created_parents,
+                home_identity,
+                &target_parents,
+                false,
+            ),
+        ));
+    }
+
+    if let Err(error) = revalidate_add_boundaries(
+        root,
+        pinned_hash,
+        home_identity.expect("real add captured $HOME identity"),
+    ) {
+        return Err(add_cleanup_error(
+            error,
+            rollback_add_to_store(
+                root,
+                source,
+                &destination,
+                source_identity,
+                &created_parents,
+                home_identity,
+                &target_parents,
+                false,
+            ),
+        ));
+    }
+    let action = store::apply_added_plain_file(
+        root,
+        store_name,
+        &candidate_store,
+        relative,
+        &platform,
+        store::ApplyOpts {
+            dry_run: false,
+            force: false,
+            json,
+        },
+    );
+    if matches!(
+        action,
+        store::ApplyAction::Conflict { .. }
+            | store::ApplyAction::Error(_)
+            | store::ApplyAction::SkippedPlatform
+    ) {
+        let primary = apply_error_from_actions(std::slice::from_ref(&action))
+            .unwrap_or_else(|| StitchError::internal("could not link adopted file"));
+        return Err(add_cleanup_error(
+            primary,
+            rollback_add_to_store(
+                root,
+                source,
+                &destination,
+                source_identity,
+                &created_parents,
+                home_identity,
+                &target_parents,
+                false,
+            ),
+        ));
+    }
+
+    if let Err(error) = revalidate_add_boundaries(
+        root,
+        pinned_hash,
+        home_identity.expect("real add captured $HOME identity"),
+    ) {
+        return Err(add_cleanup_error(
+            error,
+            rollback_add_to_store(
+                root,
+                source,
+                &destination,
+                source_identity,
+                &created_parents,
+                home_identity,
+                &target_parents,
+                true,
+            ),
+        ));
+    }
+    loaded.generated = candidate_generated;
+    if let Err(error) = loaded.generated.save(root) {
+        if error.write_committed() {
+            return Err(error.into());
+        }
+        let primary = StitchError::from(error);
+        return Err(add_cleanup_error(
+            primary,
+            rollback_add_to_store(
+                root,
+                source,
+                &destination,
+                source_identity,
+                &created_parents,
+                home_identity,
+                &target_parents,
+                true,
+            ),
+        ));
+    }
+
+    // Post-op report: emit JSON or text. Reflect what actually happened:
+    // the apply action tells us the created link path; fall back to the
+    // intended target only if it didn't report one.
+    let link_created = if let store::ApplyAction::Created(p) = &action {
+        Some(p.display().to_string())
+    } else {
+        Some(target.display().to_string())
+    };
+    let moved_from = Some(collapse_home(source)?);
+    let state_entry = report::state_entry_for(&loaded.generated, store_name);
+    if json {
+        let data = report::AddData {
+            store: store_name.to_string(),
+            target: target_str.to_string(),
+            mode: "add-to-store".into(),
+            source: Some(collapse_home(source)?),
+            files: vec![relative.to_string()],
+            patterns: Vec::new(),
+            link_created,
+            moved_from,
+            state_entry,
+        };
+        report::write("add", data, loaded.warnings.clone());
+    } else {
+        println!("Added {} to store '{}'", raw_name, store_name);
+        println!("  linked {}", target.display());
+    }
+    if let Some(warning) = strip_privileged_bits(&destination) {
+        eprintln!("{warning}");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cmd_add_json(
+    root: &std::path::Path,
+    path: &str,
+    name: &Option<String>,
+    files: &[String],
+    patterns: &[String],
+    create_file: bool,
+    to: Option<&str>,
+    dry_run: bool,
+) -> Result<(), StitchError> {
+    let warnings = match config::ConfigSnapshot::load(root) {
+        Ok(snapshot) => snapshot.loaded.warnings,
+        Err(error) => {
+            let error = StitchError::from(error);
+            crate::audit::append_command_result(root, "add", Err(&error));
+            report::write_error("add", &error, Vec::new());
+            std::process::exit(error.exit_code());
+        }
+    };
+    match cmd_add(
+        root,
+        path,
+        name,
+        files,
+        patterns,
+        create_file,
+        to,
+        dry_run,
+        true,
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            crate::audit::append_command_result(root, "add", Err(&error));
+            report::write_error("add", &error, warnings);
+            std::process::exit(error.exit_code());
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cmd_add(
+    root: &std::path::Path,
+    path: &str,
+    name: &Option<String>,
+    files: &[String],
+    patterns: &[String],
+    create_file: bool,
+    to: Option<&str>,
+    dry_run: bool,
+    json: bool,
+) -> Result<(), StitchError> {
+    // Serialize state mutations: load must see latest state and save must not
+    // race. Hold the exclusive lock for the entire non-dry-run operation.
+    let _state_lock = if dry_run {
+        None
+    } else {
+        Some(config::StateLock::exclusive(root).map_err(StitchError::from)?)
+    };
+    let snapshot = config::ConfigSnapshot::load(root)?;
+    let pinned_hash = snapshot.hash().to_owned();
+    let mut loaded = snapshot.loaded;
+    if !json {
+        print_warnings(&loaded);
+    }
+
+    if let Some(name) = name
+        && !config::is_store_name(name)
+    {
+        return Err(StitchError::path_validation(format!(
+            "invalid store name '{name}': store names must be exactly one normal path component"
+        )));
+    }
+    if create_file && (!files.is_empty() || !patterns.is_empty() || to.is_some()) {
+        return Err(StitchError::usage(
+            "--file cannot be combined with --files, --patterns, or --to",
+        ));
+    }
+    if to.is_some() && (name.is_some() || !files.is_empty() || !patterns.is_empty()) {
+        return Err(StitchError::usage(
+            "--to cannot be combined with --name, --files, or --patterns",
+        ));
+    }
+    if let Some(store_name) = to
+        && !config::is_store_name(store_name)
+    {
+        return Err(StitchError::path_validation(format!(
+            "invalid store name '{store_name}': store names must be exactly one normal path component"
+        )));
+    }
+
+    let expanded_source = expand_home(path)?;
+    let raw_source = if expanded_source.is_absolute() {
+        expanded_source
+    } else {
+        std::env::current_dir()
+            .map_err(|e| StitchError::io_context("getting current working directory", e))?
+            .join(expanded_source)
+    };
+    // Symlink-aware normalization: gateway/../victim must resolve through
+    // the gateway symlink (POSIX: symlink target spliced before ..), not
+    // collapse lexically to ~/victim. Ancestors resolve fully, but the
+    // terminal component is never followed — a terminal symlink must be
+    // rejected below, not silently adopted (its referent would be moved and
+    // the original link repointed during reconciliation). Only apply
+    // canonical resolution when the path contains ".." — otherwise preserve
+    // lexical HOME spelling so a symlinked $HOME (home_link -> real_home)
+    // doesn't canonicalize ~/.bashrc to /real_home/.bashrc and break
+    // collapse_home. Resolution failure is a hard error: falling back to
+    // lexical normalization could silently pick a different file.
+    let source = if raw_source
+        .components()
+        .any(|c| matches!(c, Component::ParentDir))
+    {
+        crate::linker::resolve_ancestors_with_missing(&raw_source).ok_or_else(|| {
+            StitchError::internal(format!(
+                "could not resolve {} through symlinks — refusing to guess at the path",
+                raw_source.display()
+            ))
+        })?
+    } else {
+        lexically_normalize(&raw_source)
+    };
+
+    // A symlink at the target is either an error — we never silently clobber
+    // or repoint a foreign symlink — or, when it points into this repo, the
+    // adopt-a-link case: register it as a `sources` entry pointing at the
+    // link's resolution (first-class, no copy, no move).
+    if source.is_symlink() {
+        if linker::points_into_repo(&source, root) {
+            let resolved = source
+                .canonicalize()
+                .or_else(|_| {
+                    std::fs::read_link(&source).map(|raw| {
+                        if raw.is_absolute() {
+                            raw
+                        } else {
+                            source
+                                .parent()
+                                .unwrap_or_else(|| std::path::Path::new("."))
+                                .join(raw)
+                        }
+                    })
+                })
+                .map_err(|e| {
+                    StitchError::io_context(format!("resolving {}", source.display()), e)
+                })?;
+            let repo_resolved = root.canonicalize().map_err(|error| {
+                StitchError::io_context(format!("resolving repository {}", root.display()), error)
+            })?;
+            let Ok(rel) = resolved.strip_prefix(&repo_resolved) else {
+                return Err(StitchError::conflict_foreign(
+                    &source,
+                    std::fs::read_link(&source).ok(),
+                ));
+            };
+            let rel_str = rel.to_string_lossy().into_owned();
+            if rel_str.is_empty() {
+                return Err(StitchError::usage(
+                    "cannot adopt the repository itself as a source",
+                ));
+            }
+            drop(_state_lock);
+            return cmd_add_source(root, path, &rel_str, dry_run, json);
+        }
+        return Err(StitchError::internal(format!(
+            "{} is already a symlink — add expects a real file or directory \
+             (remove the symlink first if you want stitch to manage it)",
+            source.display()
+        )));
+    }
+
+    // Derive the final entry name before either fresh-store or --to handling.
+    let raw_name = source
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unnamed".into());
+    if raw_name.ends_with(".tmpl") && (create_file || to.is_some()) {
+        return Err(StitchError::usage(
+            "--file and --to accept plain files only; create template sources in the repo",
+        ));
+    }
+
+    if let Some(existing_store) = to {
+        let home_identity = if dry_run {
+            None
+        } else {
+            Some(
+                safety::HomeIdentity::capture()
+                    .map_err(|error| StitchError::internal(error.to_string()))?,
+            )
+        };
+        return cmd_add_to_store(
+            root,
+            &mut loaded,
+            &source,
+            &raw_name,
+            existing_store,
+            &pinned_hash,
+            home_identity.as_ref(),
+            dry_run,
+            json,
+        );
+    }
+
+    let store_name = name.clone().unwrap_or_else(|| derive_store_name(&source));
+    if !config::is_store_name(&store_name) {
+        return Err(StitchError::path_validation(format!(
+            "invalid store name '{store_name}': store names must be exactly one normal path component"
+        )));
+    }
+    let store_dir = root.join(&store_name);
+
+    // Pre-checks: reject any collision BEFORE mutating anything. These are
+    // user collisions (the request conflicts with existing state), not tool
+    // bugs — classify as `usage` so the exit code and hint are honest.
+    if loaded.config.stores.contains_key(&store_name) {
+        return Err(StitchError::usage(format!(
+            "store '{}' already exists",
+            store_name
+        )));
+    }
+    if store_dir.symlink_metadata().is_ok() {
+        return Err(StitchError::usage(format!(
+            "store path '{}' already exists",
+            store_dir.display()
+        )));
+    }
+
+    // Validate user-supplied fragments before touching the filesystem: a
+    // `--file ../x` would otherwise escape the store/target dirs during apply
+    // (and leave an orphaned store dir on failure).
+    let validation_context = format!("store '{store_name}'");
+    config::validate_fragments(files, patterns, &validation_context)?;
+    // Match generated-state validation before the dry-run branch so a preview
+    // never accepts a pattern that a real add would refuse to persist.
+    config::validate_globs(patterns, &[], &validation_context)?;
+
+    let source_exists = source.exists();
+    if source_exists {
+        let source_resolved = source.canonicalize().map_err(|error| {
+            StitchError::io_context(format!("resolving {}", source.display()), error)
+        })?;
+        let repo_resolved = root.canonicalize().map_err(|error| {
+            StitchError::io_context(format!("resolving repository {}", root.display()), error)
+        })?;
+        if source_resolved.starts_with(&repo_resolved) {
+            return Err(StitchError::usage(if source_resolved == repo_resolved {
+                format!(
+                    "cannot add the repository itself (`{}` is the stitch repo); add a path outside it instead",
+                    source.display()
+                )
+            } else {
+                format!(
+                    "{} is inside the stitch repository; add only adopts paths outside the repository",
+                    source.display()
+                )
+            }));
+        }
+        let home_resolved = config::canonical_home()?;
+        if source_resolved == home_resolved {
+            return Err(StitchError::usage(
+                "cannot add $HOME itself; add a path below $HOME instead",
+            ));
+        }
+    }
+    if create_file && source_exists {
+        return Err(StitchError::usage(format!(
+            "{} already exists — --file is only for creating a missing file",
+            source.display()
+        )));
+    }
+
+    // --files/--patterns only apply when creating an empty store (path doesn't
+    // exist). On the adopt path the moved content determines the store layout,
+    // so passing them is a user error — silently ignoring them would repeat the
+    // "stitch says done, did nothing useful" footgun this command was created to
+    // fix.
+    if source_exists && (!files.is_empty() || !patterns.is_empty()) {
+        return Err(StitchError::usage(format!(
+            "{} exists — --files/--patterns only apply when creating a new empty store \
+             (the existing content is moved into the repo as-is)",
+            source.display()
+        )));
+    }
+
+    if dry_run {
+        if source_exists {
+            let is_dir = source.is_dir();
+            let (target_str, adopt_files) = if is_dir {
+                (collapse_home(&source)?, Vec::new())
+            } else {
+                let parent = source
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "~".into());
+                (
+                    collapse_home(&expand_home(&parent)?)?,
+                    vec![raw_name.clone()],
+                )
+            };
+            config::validate_target(&target_str, &format!("store '{store_name}'"))?;
+            let target_path = config::expand_home(&target_str)?;
+            let target_link = if is_dir {
+                target_path.clone()
+            } else {
+                target_path.join(&raw_name)
+            };
+            if let Err(action) = store::preflight_add_target(root, &target_path, &target_link) {
+                return Err(add_error_from_action(&action));
+            }
+
+            let data = report::AddData {
+                store: store_name.clone(),
+                target: target_str,
+                mode: "adopt".into(),
+                source: Some(collapse_home(&source)?),
+                files: adopt_files,
+                patterns: Vec::new(),
+                link_created: None,
+                moved_from: None,
+                state_entry: None,
+            };
+            if json {
+                report::write("add", data, loaded.warnings);
+                return Ok(());
+            }
+            println!("Would add (adopt existing):");
+            println!("  {} → {}/", source.display(), store_dir.display());
+            println!("  then symlink back to {}", target_path.display());
+        } else {
+            let (target_str, create_files) = if create_file {
+                let parent = source.parent().ok_or_else(|| {
+                    StitchError::path_validation(format!(
+                        "{} has no parent directory",
+                        source.display()
+                    ))
+                })?;
+                (collapse_home(parent)?, vec![raw_name.clone()])
+            } else {
+                (collapse_home(&source)?, files.to_vec())
+            };
+            config::validate_target(&target_str, &format!("store '{store_name}'"))?;
+
+            let data = report::AddData {
+                store: store_name.clone(),
+                target: target_str,
+                mode: if create_file { "create-file" } else { "create" }.into(),
+                source: None,
+                files: create_files,
+                patterns: patterns.to_vec(),
+                link_created: None,
+                moved_from: None,
+                state_entry: None,
+            };
+            // Dry-run must validate the same target ancestry as the real
+            // operation, while still leaving the filesystem untouched.
+            let target_path = config::expand_home(&data.target)?;
+            let target_link = if create_file {
+                target_path.join(&raw_name)
+            } else {
+                target_path.clone()
+            };
+            if let Err(action) = store::preflight_add_target(root, &target_path, &target_link) {
+                return Err(add_error_from_action(&action));
+            }
+            if json {
+                report::write("add", data, loaded.warnings);
+                return Ok(());
+            }
+            if create_file {
+                println!("Would add (create empty file):");
+                println!(
+                    "  {} → {} (empty file, linked to {})",
+                    store_name,
+                    store_dir.join(&raw_name).display(),
+                    source.display()
+                );
+            } else {
+                println!("Would add (create empty store):");
+                println!(
+                    "  {} → {} (empty store, linked to {})",
+                    store_name,
+                    store_dir.display(),
+                    source.display()
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    let home_identity = if dry_run {
+        None
+    } else {
+        Some(
+            safety::HomeIdentity::capture()
+                .map_err(|error| StitchError::internal(error.to_string()))?,
+        )
+    };
+    if !dry_run {
+        revalidate_add_boundaries(
+            root,
+            &pinned_hash,
+            home_identity
+                .as_ref()
+                .expect("real add captured $HOME identity"),
+        )?;
+    }
+
+    if source_exists {
+        // --- Adopt path: move existing content into the repo, link back. ---
+        // --files/--patterns are not used here; the moved content determines
+        // the store layout (whole-dir for dirs, single-file for files).
+        let is_dir = source.is_dir();
+        let target_str = if is_dir {
+            collapse_home(&source)?
+        } else {
+            match source.parent() {
+                Some(p) => collapse_home(p)?,
+                None => "~".into(),
+            }
+        };
+        config::validate_target(&target_str, &format!("store '{store_name}'"))?;
+
+        let adopt_files = if is_dir {
+            vec![]
+        } else {
+            vec![raw_name.clone()]
+        };
+
+        let new_store = config::Store {
+            target: Some(target_str.clone()),
+            files: adopt_files.clone(),
+            patterns: vec![],
+            sources: std::collections::BTreeMap::new(),
+            ignore: vec![],
+            when: config::WhenClause::default(),
+            hooks: config::Hooks::default(),
+            targets: std::collections::BTreeMap::new(),
+        };
+        let target_path = config::expand_home(&target_str)?;
+        let target_link = if is_dir {
+            target_path.clone()
+        } else {
+            target_path.join(&raw_name)
+        };
+        if let Err(action) = store::preflight_add_target(root, &target_path, &target_link) {
+            return Err(add_error_from_action(&action));
+        }
+        let target_parents = prepare_target_parents(
+            &target_link,
+            root,
+            &pinned_hash,
+            home_identity
+                .as_ref()
+                .expect("real add captured $HOME identity"),
+        )?;
+        let source_metadata = match std::fs::symlink_metadata(&source) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return Err(add_cleanup_error(
+                    StitchError::io_context(format!("inspecting {}", source.display()), error),
+                    remove_created_parents(&target_parents),
+                ));
+            }
+        };
+        let source_identity = InodeIdentity {
+            dev: source_metadata.dev(),
+            ino: source_metadata.ino(),
+        };
+
+        // Revalidate immediately before moving user data. Target parents were
+        // created above and are identity-pinned for rollback.
+        if let Err(error) = revalidate_add_boundaries(
+            root,
+            &pinned_hash,
+            home_identity
+                .as_ref()
+                .expect("real add captured $HOME identity"),
+        ) {
+            return Err(add_cleanup_error(
+                error,
+                remove_created_parents(&target_parents),
+            ));
+        }
+
+        // Move: relocate the file/dir into the repo. If the source changed
+        // while target parents were being prepared, remove only those parents
+        // before returning the error.
+        if let Err(error) =
+            ensure_inode_identity(&source, source_identity, "source changed before adoption")
+        {
+            return Err(add_cleanup_error(
+                error,
+                remove_created_parents(&target_parents),
+            ));
+        }
+        let mut store_identity = None;
+        if is_dir {
+            if let Err(error) = std::fs::rename(&source, &store_dir) {
+                return Err(add_cleanup_error(
+                    StitchError::io_context(
+                        format!(
+                            "moving {} into store {}",
+                            source.display(),
+                            store_dir.display()
+                        ),
+                        error,
+                    ),
+                    remove_created_parents(&target_parents),
+                ));
+            }
+        } else {
+            // `store_dir` was checked absent above and is a direct child of
+            // the existing repo root. Create it exclusively and retain its
+            // inode so a failed cross-filesystem move cannot leave an
+            // unowned empty directory behind (or remove a replacement).
+            if let Err(error) = std::fs::create_dir(&store_dir) {
+                return Err(add_cleanup_error(
+                    StitchError::io_context(
+                        format!("creating store directory {}", store_dir.display()),
+                        error,
+                    ),
+                    remove_created_parents(&target_parents),
+                ));
+            }
+            let created_store_dir = match inode_identity(&store_dir) {
+                Ok(identity) => CreatedDirectory {
+                    path: store_dir.clone(),
+                    identity,
+                },
+                Err(error) => {
+                    return Err(add_cleanup_error(
+                        StitchError::internal(format!(
+                            "could not verify newly created store directory {}: {error}",
+                            store_dir.display()
+                        )),
+                        remove_created_parents(&target_parents),
+                    ));
+                }
+            };
+            store_identity = Some(created_store_dir.identity);
+            if let Err(error) = std::fs::rename(&source, store_dir.join(&raw_name)) {
+                let mut cleanup_errors =
+                    remove_created_parents(std::slice::from_ref(&created_store_dir));
+                cleanup_errors.extend(remove_created_parents(&target_parents));
+                return Err(add_cleanup_error(
+                    StitchError::io_context(
+                        format!(
+                            "moving {} into store {}",
+                            source.display(),
+                            store_dir.join(&raw_name).display()
+                        ),
+                        error,
+                    ),
+                    cleanup_errors,
+                ));
+            }
+        }
+
+        // Strip setuid/setgid/sticky bits from the adopted path. rename(2)
+        // preserves mode bits; a setuid dotfile would land in the repo carrying
+        // privileged bits that git would silently drop on clone anyway. This is
+        // defensive and informational — the adopt already succeeded, so a chmod
+        // failure is a warning, not a rollback.
+        let adopted_path = if is_dir {
+            store_dir.clone()
+        } else {
+            store_dir.join(&raw_name)
+        };
+        let bit_warning = strip_privileged_bits(&adopted_path);
+
+        // Link: create the return symlink using the in-memory store.
+        // If this fails, roll back the move so the user's file is back where
+        // it was. State was never touched.
+        if let Err(error) = revalidate_add_boundaries(
+            root,
+            &pinned_hash,
+            home_identity
+                .as_ref()
+                .expect("real add captured $HOME identity"),
+        ) {
+            let cleanup_errors = match rollback_adopt_move(
+                &source,
+                &store_dir,
+                &raw_name,
+                is_dir,
+                source_identity,
+                store_identity,
+                home_identity.as_ref(),
+                &target_parents,
+            ) {
+                Ok(()) => Vec::new(),
+                Err(error) => vec![format!("could not roll back adopted path: {error}")],
+            };
+            return Err(add_cleanup_error(error, cleanup_errors));
+        }
+        let platform = Platform::detect();
+        let mut _warnings = Vec::new();
+        // Sweep boundaries: every configured target dir, plus the new store's
+        // own targets (it is not in `loaded.config` yet).
+        let mut boundaries = store::sweep_boundaries(&loaded.config);
+        for dir in store::store_target_dirs(&new_store) {
+            boundaries.insert(dir);
+        }
+        let results = store::apply_store(
+            root,
+            &store_name,
+            &new_store,
+            &platform,
+            &loaded.config.vars,
+            store::ApplyOpts {
+                dry_run: false,
+                force: false,
+                json,
+            },
+            &mut _warnings,
+            &boundaries,
+        );
+        if results.actions.iter().any(|a| {
+            matches!(
+                a,
+                store::ApplyAction::Conflict { .. } | store::ApplyAction::Error(_)
+            )
+        }) {
+            let primary = apply_error_from_actions(&results.actions)
+                .unwrap_or_else(|| StitchError::internal("apply reported conflicts or errors"));
+            let cleanup_errors = cleanup_uncommitted_add(
+                root,
+                &store_name,
+                &new_store,
+                &platform,
+                home_identity.as_ref(),
+                &target_parents,
+            );
+            if let Err(error) = rollback_adopt_move(
+                &source,
+                &store_dir,
+                &raw_name,
+                is_dir,
+                source_identity,
+                store_identity,
+                home_identity.as_ref(),
+                &target_parents,
+            ) {
+                let cleanup = if cleanup_errors.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Cleanup also failed: {}.", cleanup_errors.join("; "))
+                };
+                return Err(StitchError::internal(format!(
+                    "ADD FAILED ({primary}) and rollback also failed: {} is stranded in {} ({error}).{cleanup}",
+                    source.display(),
+                    store_dir.display(),
+                )));
+            }
+            return Err(add_cleanup_error(primary, cleanup_errors));
+        }
+
+        // Record: persist state.toml (generated half only). stitch.toml is
+        // never rewritten by the tool after init, so comments/formatting survive.
+        loaded.generated.stores.insert(
+            store_name.clone(),
+            config::GeneratedStore {
+                target: Some(target_str.clone()),
+                files: adopt_files.clone(),
+                patterns: vec![],
+                sources: std::collections::BTreeMap::new(),
+                targets: std::collections::BTreeMap::new(),
+            },
+        );
+        if let Err(error) = revalidate_add_boundaries(
+            root,
+            &pinned_hash,
+            home_identity
+                .as_ref()
+                .expect("real add captured $HOME identity"),
+        ) {
+            let cleanup_errors = cleanup_uncommitted_add(
+                root,
+                &store_name,
+                &new_store,
+                &platform,
+                home_identity.as_ref(),
+                &target_parents,
+            );
+            if let Err(rollback_error) = rollback_adopt_move(
+                &source,
+                &store_dir,
+                &raw_name,
+                is_dir,
+                source_identity,
+                store_identity,
+                home_identity.as_ref(),
+                &target_parents,
+            ) {
+                let cleanup = if cleanup_errors.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Cleanup also failed: {}.", cleanup_errors.join("; "))
+                };
+                return Err(StitchError::internal(format!(
+                    "add revalidation failed ({error}) and rollback also failed: {rollback_error}.{cleanup}"
+                )));
+            }
+            return Err(add_cleanup_error(error, cleanup_errors));
+        }
+        if let Err(error) = loaded.generated.save(root) {
+            // A directory fsync can fail after rename. The state is then
+            // already committed, so rolling back its links/store would make
+            // that state point at missing data.
+            if error.write_committed() {
+                return Err(error.into());
+            }
+            let primary = StitchError::from(error);
+            let cleanup_errors = cleanup_uncommitted_add(
+                root,
+                &store_name,
+                &new_store,
+                &platform,
+                home_identity.as_ref(),
+                &target_parents,
+            );
+            if let Err(rollback_error) = rollback_adopt_move(
+                &source,
+                &store_dir,
+                &raw_name,
+                is_dir,
+                source_identity,
+                store_identity,
+                home_identity.as_ref(),
+                &target_parents,
+            ) {
+                let cleanup = if cleanup_errors.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Cleanup also failed: {}.", cleanup_errors.join("; "))
+                };
+                return Err(StitchError::internal(format!(
+                    "state save failed ({primary}) and rollback also failed: {} is stranded in {} ({rollback_error}).{cleanup}",
+                    source.display(),
+                    store_dir.display(),
+                )));
+            }
+            return Err(add_cleanup_error(primary, cleanup_errors));
+        }
+
+        // Post-op report: emit JSON or text.
+        let link_created = results
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                store::ApplyAction::Created(p) => Some(p.display().to_string()),
+                _ => None,
+            })
+            .or_else(|| Some(target_link.display().to_string()));
+        let moved_from = Some(collapse_home(&source)?);
+        let state_entry = report::state_entry_for(&loaded.generated, &store_name);
+        if json {
+            let data = report::AddData {
+                store: store_name.clone(),
+                target: target_str.clone(),
+                mode: "adopt".into(),
+                source: Some(collapse_home(&source)?),
+                files: adopt_files,
+                patterns: Vec::new(),
+                link_created,
+                moved_from,
+                state_entry,
+            };
+            report::write("add", data, loaded.warnings);
+        } else {
+            println!(
+                "Added store '{}' (adopted from {})",
+                store_name,
+                source.display()
+            );
+            for action in &results.actions {
+                match action {
+                    store::ApplyAction::Created(p) => println!("  linked {}", p.display()),
+                    store::ApplyAction::AlreadyLinked(_) => println!("  already linked"),
+                    _ => {}
+                }
+            }
+        }
+        if let Some(warning) = bit_warning {
+            eprintln!("{warning}");
+        }
+    } else {
+        // --- Create-empty path: fresh directory store, or one empty file. ---
+        let (target_str, create_files) = if create_file {
+            let parent = source.parent().ok_or_else(|| {
+                StitchError::path_validation(format!(
+                    "{} has no parent directory",
+                    source.display()
+                ))
+            })?;
+            (collapse_home(parent)?, vec![raw_name.clone()])
+        } else {
+            (collapse_home(&source)?, files.to_vec())
+        };
+        config::validate_target(&target_str, &format!("store '{store_name}'"))?;
+
+        let new_store = config::Store {
+            target: Some(target_str.clone()),
+            files: create_files.clone(),
+            patterns: patterns.to_vec(),
+            sources: std::collections::BTreeMap::new(),
+            ignore: vec![],
+            when: config::WhenClause::default(),
+            hooks: config::Hooks::default(),
+            targets: std::collections::BTreeMap::new(),
+        };
+        let target_path = config::expand_home(&target_str)?;
+        let target_link = if create_file {
+            target_path.join(&raw_name)
+        } else {
+            target_path.clone()
+        };
+        if let Err(action) = store::preflight_add_target(root, &target_path, &target_link) {
+            return Err(add_error_from_action(&action));
+        }
+        revalidate_add_boundaries(
+            root,
+            &pinned_hash,
+            home_identity
+                .as_ref()
+                .expect("real add captured $HOME identity"),
+        )?;
+        std::fs::create_dir(&store_dir).map_err(|e| {
+            StitchError::io_context(
+                format!("creating store directory {}", store_dir.display()),
+                e,
+            )
+        })?;
+        let store_identity = match inode_identity(&store_dir) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return Err(add_cleanup_error(
+                    error,
+                    vec![format!(
+                        "new store directory {} could not be identity-checked; inspect it before retrying",
+                        store_dir.display()
+                    )],
+                ));
+            }
+        };
+        let empty_file_identity = if create_file {
+            if let Err(error) = revalidate_add_boundaries(
+                root,
+                &pinned_hash,
+                home_identity
+                    .as_ref()
+                    .expect("real add captured $HOME identity"),
+            ) {
+                let cleanup = discard_uncommitted_add(&store_dir, store_identity);
+                return Err(add_cleanup_error(error, cleanup.into_iter().collect()));
+            }
+            let file_path = store_dir.join(&raw_name);
+            if let Err(error) = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&file_path)
+            {
+                let cleanup = discard_uncommitted_add(&store_dir, store_identity);
+                return Err(add_cleanup_error(
+                    StitchError::io_context(
+                        format!("creating empty file {}", file_path.display()),
+                        error,
+                    ),
+                    cleanup.into_iter().collect(),
+                ));
+            }
+            Some(match inode_identity(&file_path) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    let cleanup = discard_uncommitted_add(&store_dir, store_identity);
+                    return Err(add_cleanup_error(error, cleanup.into_iter().collect()));
+                }
+            })
+        } else {
+            None
+        };
+        let target_parents = match prepare_target_parents(
+            &target_link,
+            root,
+            &pinned_hash,
+            home_identity
+                .as_ref()
+                .expect("real add captured $HOME identity"),
+        ) {
+            Ok(parents) => parents,
+            Err(error) => {
+                let mut cleanup_errors = Vec::new();
+                if let Some(identity) = empty_file_identity
+                    && let Some(cleanup_error) =
+                        discard_uncommitted_empty_file(&store_dir.join(&raw_name), identity)
+                {
+                    cleanup_errors.push(cleanup_error);
+                }
+                if let Some(cleanup_error) = discard_uncommitted_add(&store_dir, store_identity) {
+                    cleanup_errors.push(cleanup_error);
+                }
+                return Err(add_cleanup_error(error, cleanup_errors));
+            }
+        };
+        if let Err(error) = revalidate_add_boundaries(
+            root,
+            &pinned_hash,
+            home_identity
+                .as_ref()
+                .expect("real add captured $HOME identity"),
+        ) {
+            let mut cleanup_errors = remove_created_parents(&target_parents);
+            if let Some(identity) = empty_file_identity
+                && let Some(cleanup_error) =
+                    discard_uncommitted_empty_file(&store_dir.join(&raw_name), identity)
+            {
+                cleanup_errors.push(cleanup_error);
+            }
+            if let Some(cleanup_error) = discard_uncommitted_add(&store_dir, store_identity) {
+                cleanup_errors.push(cleanup_error);
+            }
+            return Err(add_cleanup_error(error, cleanup_errors));
+        }
+
+        if let Err(error) = revalidate_add_boundaries(
+            root,
+            &pinned_hash,
+            home_identity
+                .as_ref()
+                .expect("real add captured $HOME identity"),
+        ) {
+            let mut cleanup_errors = remove_created_parents(&target_parents);
+            if let Some(identity) = empty_file_identity
+                && let Some(cleanup_error) =
+                    discard_uncommitted_empty_file(&store_dir.join(&raw_name), identity)
+            {
+                cleanup_errors.push(cleanup_error);
+            }
+            if let Some(cleanup_error) = discard_uncommitted_add(&store_dir, store_identity) {
+                cleanup_errors.push(cleanup_error);
+            }
+            return Err(add_cleanup_error(error, cleanup_errors));
+        }
+        let platform = Platform::detect();
+        let mut _warnings = Vec::new();
+        // Sweep boundaries: every configured target dir, plus the new store's
+        // own targets (it is not in `loaded.config` yet).
+        let mut boundaries = store::sweep_boundaries(&loaded.config);
+        for dir in store::store_target_dirs(&new_store) {
+            boundaries.insert(dir);
+        }
+        let results = store::apply_store(
+            root,
+            &store_name,
+            &new_store,
+            &platform,
+            &loaded.config.vars,
+            store::ApplyOpts {
+                dry_run: false,
+                force: false,
+                json,
+            },
+            &mut _warnings,
+            &boundaries,
+        );
+        // Target ancestors were created and identity-pinned before the store
+        // mutation, so cleanup can never claim a directory created by another
+        // process.
+
+        if !json {
+            for action in &results.actions {
+                match action {
+                    store::ApplyAction::Created(p) => println!("  linked {}", p.display()),
+                    store::ApplyAction::AlreadyLinked(_) => println!("  already linked"),
+                    store::ApplyAction::Conflict { target, .. } => {
+                        println!("  conflict at {}", target.display())
+                    }
+                    store::ApplyAction::Error(e) => println!("  error: {e}"),
+                    _ => {}
+                }
+            }
+        }
+
+        let failed = results.actions.iter().any(|a| {
+            matches!(
+                a,
+                store::ApplyAction::Conflict { .. } | store::ApplyAction::Error(_)
+            )
+        });
+
+        if failed {
+            let primary = apply_error_from_actions(&results.actions)
+                .unwrap_or_else(|| StitchError::internal("apply reported conflicts or errors"));
+            let mut cleanup_errors = cleanup_uncommitted_add(
+                root,
+                &store_name,
+                &new_store,
+                &platform,
+                home_identity.as_ref(),
+                &target_parents,
+            );
+            if create_file
+                && let Some(identity) = empty_file_identity
+                && let Some(error) =
+                    discard_uncommitted_empty_file(&store_dir.join(&raw_name), identity)
+            {
+                cleanup_errors.push(error);
+            }
+            if let Some(error) = discard_uncommitted_add(&store_dir, store_identity) {
+                cleanup_errors.push(error);
+            }
+            return Err(add_cleanup_error(primary, cleanup_errors));
+        }
+
+        // Persist state.toml (generated half only). If save fails after apply
+        // already created links, undo them and the empty store dir so no
+        // half-applied store is left without a state entry.
+        loaded.generated.stores.insert(
+            store_name.clone(),
+            config::GeneratedStore {
+                target: Some(target_str.clone()),
+                files: create_files.clone(),
+                patterns: patterns.to_vec(),
+                sources: std::collections::BTreeMap::new(),
+                targets: std::collections::BTreeMap::new(),
+            },
+        );
+        if let Err(error) = revalidate_add_boundaries(
+            root,
+            &pinned_hash,
+            home_identity
+                .as_ref()
+                .expect("real add captured $HOME identity"),
+        ) {
+            let mut cleanup_errors = cleanup_uncommitted_add(
+                root,
+                &store_name,
+                &new_store,
+                &platform,
+                home_identity.as_ref(),
+                &target_parents,
+            );
+            if create_file
+                && let Some(identity) = empty_file_identity
+                && let Some(cleanup_error) =
+                    discard_uncommitted_empty_file(&store_dir.join(&raw_name), identity)
+            {
+                cleanup_errors.push(cleanup_error);
+            }
+            if let Some(cleanup_error) = discard_uncommitted_add(&store_dir, store_identity) {
+                cleanup_errors.push(cleanup_error);
+            }
+            return Err(add_cleanup_error(error, cleanup_errors));
+        }
+        if let Err(error) = loaded.generated.save(root) {
+            // See the adopt path above: rename succeeded, so leave the
+            // matching links and store in place when only directory fsync
+            // failed.
+            if error.write_committed() {
+                return Err(error.into());
+            }
+            let primary = StitchError::from(error);
+            let mut cleanup_errors = cleanup_uncommitted_add(
+                root,
+                &store_name,
+                &new_store,
+                &platform,
+                home_identity.as_ref(),
+                &target_parents,
+            );
+            if create_file
+                && let Some(identity) = empty_file_identity
+                && let Some(error) =
+                    discard_uncommitted_empty_file(&store_dir.join(&raw_name), identity)
+            {
+                cleanup_errors.push(error);
+            }
+            if let Some(error) = discard_uncommitted_add(&store_dir, store_identity) {
+                cleanup_errors.push(error);
+            }
+            return Err(add_cleanup_error(primary, cleanup_errors));
+        }
+
+        // Post-op report: emit JSON or text.
+        let link_created = results
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                store::ApplyAction::Created(p) => Some(p.display().to_string()),
+                _ => None,
+            })
+            .or_else(|| Some(target_link.display().to_string()));
+        let state_entry = report::state_entry_for(&loaded.generated, &store_name);
+        if json {
+            let data = report::AddData {
+                store: store_name.clone(),
+                target: target_str.clone(),
+                mode: if create_file { "create-file" } else { "create" }.into(),
+                source: None,
+                files: create_files.clone(),
+                patterns: patterns.to_vec(),
+                link_created,
+                moved_from: None,
+                state_entry,
+            };
+            report::write("add", data, loaded.warnings);
+        } else {
+            println!("Added store '{}'", store_name);
+        }
+    }
+
+    Ok(())
+}
+
+/// True if two paths refer to the same location (canonical when possible).
+pub(crate) fn paths_equal(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let ca = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
+    let cb = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
+    ca == cb
+}
+
+/// For a file-mode symlink, return the target directory by stripping the
+/// repo-relative source path from the end of the symlink's location.
+///
+/// `link` is where the symlink lives (e.g. `~/.config/nvim/lua/plugin.lua`);
+/// `source_rel` is its path inside the store (e.g. `lua/plugin.lua`). The
+/// result is the common directory the store is linked into
+/// (e.g. `~/.config/nvim`).
+pub(crate) fn target_dir_for_file_link(
+    link: &std::path::Path,
+    source_rel: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let link_comps: Vec<_> = link.components().collect();
+    let source_comps: Vec<_> = source_rel.components().collect();
+    if link_comps.len() < source_comps.len() {
+        return None;
+    }
+    let split = link_comps.len() - source_comps.len();
+    if link_comps[split..] != source_comps[..] {
+        return None;
+    }
+    let mut target = std::path::PathBuf::new();
+    for c in &link_comps[..split] {
+        target.push(c.as_os_str());
+    }
+    Some(target)
+}
+
+/// Resolve `.` and `..` components lexically, without touching the
+/// filesystem or following symlinks.
+fn lexically_normalize(path: &std::path::Path) -> std::path::PathBuf {
+    let mut normalized = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if let Some(Component::Normal(_)) = normalized.components().next_back() {
+                    normalized.pop();
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                normalized = std::path::PathBuf::new();
+                normalized.push(component.as_os_str());
+            }
+            Component::Normal(_) => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+/// Collapse `$HOME` prefix to `~` for state.toml target strings.
+pub(crate) fn collapse_home(path: &std::path::Path) -> Result<String, ConfigError> {
+    let home = config::expand_home("~")?;
+    // Use parent-canonicalized comparison so `~/out` and `/realhome/out`
+    // collapse to the same `~` form when `$HOME` is a symlink.
+    let home_canon = config::canonical_target_for_comparison(&home);
+    let path_canon = config::canonical_target_for_comparison(path);
+    if let Ok(rel) = path_canon.strip_prefix(&home_canon) {
+        if rel.as_os_str().is_empty() {
+            return Ok("~".into());
+        }
+        return Ok(format!("~/{}", rel.display()));
+    }
+    if let Ok(rel) = path.strip_prefix(&home) {
+        if rel.as_os_str().is_empty() {
+            return Ok("~".into());
+        }
+        return Ok(format!("~/{}", rel.display()));
+    }
+    Ok(path.display().to_string())
+}

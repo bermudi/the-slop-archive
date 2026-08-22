@@ -1,0 +1,11 @@
+{
+  "version": 0,
+  "total_points": 0,
+  "status": "PENDING",
+  "note": "Groundwork manifest. Generate only after the real reference and hidden suite exist.",
+  "categories": {},
+  "points": {},
+  "preservation": [],
+  "regression": [],
+  "hidden_targets": []
+}
