@@ -159,6 +159,11 @@ typecheck` → base restore → graded run (2503 tests, 0 fail, 0 dupes,
 This is the deterministic outcome to expect from a base-with-trivial-patch
 trial until the manifest is generated.
 
+**Reference validation (2026-08-22):** `solution.patch` applies cleanly to
+the shipped curated base on ext4; `bun run typecheck` passes and the complete
+offline suite reports **2526 pass / 0 fail across 121 files** with only
+`src/voice.test.ts` excluded.
+
 ### Regenerate the manifest
 
 ```bash

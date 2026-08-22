@@ -179,7 +179,7 @@ The task was validated by host dry-runs; dockerd was never available. Before
 the first real trial, run:
 
 - [ ] `harbor check tasks/01-pi-thinking-ownership` (image builds, config valid)
-- [ ] one gold trial (`solve.sh` path) → expect `scored` 100, 112/112 tests
+- [ ] one gold trial (`solve.sh` path) → expect `scored` 100, 115/115 tests
 - [ ] one base trial (no patch) → expect `scored` 0 (capability) or `no_patch`
 - [ ] one partial trial (e.g. the minimal split) → expect ~47
 - [ ] inspect `reward.json`, `ctrf.json`, `run.log` in the verifier artifacts
