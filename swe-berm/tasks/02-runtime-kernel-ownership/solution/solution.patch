@@ -1,0 +1,3788 @@
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index 86dc735..a1a726d 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -214,7 +214,9 @@ Deployment
+   └── model credentials/catalog
+ ```
+ 
+-The dispatcher receives mandatory lifecycle-owned Surface runtime authority at construction. That authority reconciles a pending project assignment before every Surface-backed runtime acquisition and verifies the current Binding/environment both before and after memory capture. Its synchronous check is closed over by the runner, so queued work fails closed after a binding change. Resuming a Conversation on another compatible Surface creates a fresh runtime using destination Surface settings.
++The dispatcher receives mandatory lifecycle-owned Surface runtime authority at construction. It also receives the concrete `ConversationRuntimeHost` mandatorily; it cannot create a second runtime owner. That authority reconciles a pending project assignment before every Surface-backed runtime acquisition and verifies the current Binding/environment both before and after memory capture. Its synchronous check is closed over by the runner, so queued work fails closed after a binding change. Resuming a Conversation on another compatible Surface creates a fresh runtime using destination Surface settings.
++
++The runtime host is also the shutdown fence for ephemeral Conversation work. `closeAdmission()` synchronously rejects new runtime creation, registration, and queue admission. Its idempotent single-flight `disposeAll()` then awaits admitted prompt queues, in-flight construction reservations, active per-runtime disposals, and runner/delegated-work cleanup. The deployment signal path closes Telegram intake and text coalescing, stops scheduler timers, and shares one shutdown promise across repeated signals before it awaits cleanup. Runtime admission also fences any scheduler dispatch that was already in flight.
+ 
+ ## Prompt architecture
+ 
+@@ -471,7 +473,17 @@ One ordered sequence, walked end to end. Historical change names and task counts
+ 
+ Steps 1–10a, including attachment intake, agent-owned prompt files, the persistence/runtime-authority and command/lifecycle authority closures, native skill layout, catalog resolution, Surface skill policy, subagent skill inheritance, and the delegated-run record store, are complete. Steps 11–12 remain frozen historical inputs under `specs/parked/`, and step 13 has no live parked artifact (see `BACKLOG.md`).
+ 
+-**WIP limit: one implementation phase in progress, one plainly described next.** No implementation phase is currently active. The command/lifecycle authority closure is complete. The plainly described next is ACP external agents under decision 0044 — capability-scoped Claude/Devin ACP behind the external-agent execution host, abandoning `scratch/external-agents/` in place; remaining parked scope stays deferred until deliberately resumed.
++### Second inward solidification pass
++
++Before ACP or other product work, the implementation returns to the remaining mismatch between the accepted runtime model and its physical module ownership. This pass borrows discipline rather than scale from larger agent systems: prepare authoritative facts before activation, freeze one runtime generation's inputs, and keep execution behind narrow code-owned seams. It does not introduce a gateway, plugin SDK, dynamic tool discovery, SQLite-only persistence, provider registry, or generic channel abstraction.
++
++The delivery order is:
++
++1. **Runtime-kernel ownership — implemented in this cycle.** `ConversationRuntimeHost` now concretely owns runtime registration, in-flight construction, queues, and disposal authority. The composition root constructs it before lifecycle and dispatcher; Telegram intake receives the completed kernel and no longer contains the nullable lifecycle/dispatcher hookup.
++2. **Prepared runtime assembly — plainly described next.** Resolve one immutable runtime plan containing Conversation and Surface authority, Execution Environment, model/thinking selection, prompt, captured memory context, resolved skills, and a code-owned capability manifest before registration. Encapsulate the existing asynchronous authority checkpoints in a candidate/reservation protocol without collapsing them into one unsafe early check.
++3. **Later themes, not active phases.** Narrow capability/tool assembly and the `AgentRunner` facade; normalize delegated execution outcomes separately from delivery; own startup and shutdown as one deployment lifetime; then clean dependency direction, Conversation/Pi-session terminology, and the permanent architecture view. Each theme must be freshly shaped from the code produced by the preceding cycle.
++
++**WIP limit: one implementation phase in progress, one plainly described next.** Runtime-kernel ownership is implemented and verified by the focused orchestration, Telegram, bot, and delegated-authority tests. Prepared runtime assembly is the one named next cycle. ACP external agents remains accepted under decision 0044 but is parked behind this inward pass; its accepted backend and persistence scope is unchanged.
+ 
+ ## Feature readiness gate
+ 
+diff --git a/BACKLOG.md b/BACKLOG.md
+index c3af6e4..011e3e7 100644
+--- a/BACKLOG.md
++++ b/BACKLOG.md
+@@ -10,11 +10,24 @@ Parked scope and open questions. Items graduate only when a deliberate implement
+ 
+ ## Now
+ 
+-**No implementation cycle is active.** The architecture reconstruction, merge-gate closure, and Litespec-to-Nospec authority cutover are complete. Do not fold the next product change into process adoption.
++**Runtime-kernel ownership — implemented and verified.** Before ACP or other product work, the completed inward pass made Conversation runtime ownership constructible without Telegram and removed the nullable lifecycle/dispatcher hookup: a concrete runtime host owns runtime registrations, in-flight construction, queues, and disposal authority; dispatcher construction requires that host; Telegram admission closes before cleanup; and shutdown is single-flight while the host drains admitted queues, construction, and disposal work. Core construction moved out of `tg/intake.ts`, and the orchestration contracts now have one-way dependency direction.
+ 
+ ## Next
+ 
+-**ACP external agents (decision 0044).** Replace the current Claude/Devin legacy paths with capability-scoped ACP behind the external-agent execution host. The accepted scope remains the parked `acp-external-agents` entry below: exact-version-pinned Claude ACP, native Devin ACP, completed-context continuation, no interrupted-turn recovery claim, and abandonment of `scratch/external-agents/` in place. Codex transport remains unclassified.
++**Prepared runtime assembly.** After runtime ownership is real, shape one immutable Conversation-runtime plan containing the already-authoritative environment, model/thinking selection, prompt, captured memory context, resolved skills, and code-owned capability manifest. Runtime construction must retain authority checkpoints across asynchronous boundaries and commit one coherent plan; it must not replace the existing race-closing checks with one early check.
++
++ACP external agents remains accepted under decision 0044 but is parked behind this inward solidification pass. Its backend and persistence scope is unchanged.
++
++## Inward solidification direction
++
++Only **Now** and **Next** are active delivery positions. Later themes remain unshaped backlog direction and must be re-scouted after the preceding cycle lands:
++
++1. code-owned runtime capability assembly and a smaller `AgentRunner` execution facade;
++2. delegated execution-terminal normalization with delivery state kept separate;
++3. one deployment-lifetime owner for startup, admission stop, reconciliation, and idempotent shutdown;
++4. dependency, terminology, and authority-record cleanup sufficient to lift the stabilization gate.
++
++Do not introduce a plugin registry, dynamic tool discovery, SQLite-only persistence, speculative provider interfaces, or a single-check replacement for the dispatcher's asynchronous authority fences as part of this pass.
+ 
+ ## Stabilization closure
+ 
+@@ -40,7 +53,7 @@ The deployment entered state version 4 through an operator-approved recoverable
+ 
+ ### Architectural review closure — 2026-08-07
+ 
+-- **Closed:** D1/D2 command/lifecycle authority is implemented and verified; ACP external agents is now the plainly described next cycle.
++- **Closed:** D1/D2 command/lifecycle authority is implemented and verified. ACP external agents became the next cycle at this review closure and is now parked unchanged behind the inward solidification pass recorded above.
+ - **Closed by record coherence:** D3 does not route metrics through `ConversationStore`. Decision 0014 now states the existing split: `ConversationStore` and `InternalSessionStore` own their layout lifetimes, while `MetricsStore` alone reads/appends metric records and may lazily materialize its narrow metrics artifact through `metricsPath`; `AGENTS.md` grants that narrow home-I/O exemption.
+ - **Closed as misclassified:** D4 is not a decision-0008 violation. That decision governs `$GOBLIN_HOME` paths; `SkillCatalogResolver` already owns the exact host catalog root required by decision 0034. No `hostSkillsPath()` helper is needed.
+ - **Closed by clarified practice:** tmp/rename applies to whole-file replacement; `"wx"` is atomic exclusive creation; append-mode JSONL is append-only logging, not replacement atomicity. The direct append sites are not separate violations on that basis. The onboarding wizard's `console.log` remains the already-tracked deferred CLI-output carve-out; `voice.ts` writes a disposable `tmpdir()` tool input, not durable state.
+@@ -51,7 +64,7 @@ The deployment entered state version 4 through an operator-approved recoverable
+ 
+ Historical unstarted plans live in `specs/parked/`; they are frozen references, not active work. Graduate one only by scouting current code and creating fresh work state when needed; never translate its old task list mechanically.
+ 
+-- **`acp-external-agents`** — protocol classification complete for Claude and Devin under decision 0044; this is the plainly described next cycle. Exact-version-pinned Claude ACP and native Devin ACP preserve completed context through `resume` and `load` respectively, need no client-hosted filesystem/terminal methods, and cannot recover an interrupted user turn. Legacy `scratch/external-agents/` records are abandoned in place (no migration, no backwards compatibility — same ruling as the delegated-run-records layout break). The frozen proposal remains historical input only: do not carry forward its stale session ownership, scratch storage, constrained-permission assumptions, virtual-terminal scope, unpersisted generic-continuation recovery claim, or PTY fallback for Claude/Devin. Codex transport remains unclassified.
++- **`acp-external-agents`** — protocol classification is complete for Claude and Devin under decision 0044, but delivery is parked behind the inward solidification pass. Exact-version-pinned Claude ACP and native Devin ACP preserve completed context through `resume` and `load` respectively, need no client-hosted filesystem/terminal methods, and cannot recover an interrupted user turn. Legacy `scratch/external-agents/` records are abandoned in place (no migration, no backwards compatibility — same ruling as the delegated-run-records layout break). The frozen proposal remains historical input only: do not carry forward its stale session ownership, scratch storage, constrained-permission assumptions, virtual-terminal scope, unpersisted generic-continuation recovery claim, or PTY fallback for Claude/Devin. Codex transport remains unclassified.
+ - **`delegated-work-ownership`** — decisions 0036, 0040, 0041, 0044, and 0045 settle ownership, host separation, trust, qualified Claude/Devin protocol capabilities, and the attached subagent record store. Record storage is implemented: one host-owned store at `state/delegated-work/runs/`, append-only invocation log, revival as a new invocation, v5 layout break abandoning legacy subagent trees in place. Remaining parked scope: durable lifetime, pending-completion claim/ack/release, cancellation races beyond the attached fence, and model-selected CWD/invocation/unattended-dangerous profile for external agents rather than extending the current fixed-project/two-profile seam. External-agent records join the store when ACP lands. The frozen proposal's stale migration/reconciliation wording stays dead.
+ - **`inner-life`** — decision 0035 is accepted and its lifecycle prerequisite is satisfied; implementation remains parked pending fresh shaping and delivery capacity.
+ - **`skill-catalog-resolution`** — implemented. `SkillCatalogResolver` (`src/agent/skills/`) owns exact-root resolution from Conversation environment plus a `SkillPolicy`; `skillSources` is removed with visible rejection; default policy (Goblin all / environment all / host none) wired into runtime construction.
+diff --git a/src/bot.test.ts b/src/bot.test.ts
+index 9230a40..b6e0697 100644
+--- a/src/bot.test.ts
++++ b/src/bot.test.ts
+@@ -392,6 +392,14 @@ describe("replyNoActiveSession", () => {
+ });
+ 
+ describe("buildBot integration", () => {
++  it("derives runtime delegated-work ownership from the single SubagentRunner host", async () => {
++    const built = await makeBot();
++
++    // buildBot exposes no second DelegatedWorkHost input: composition can only
++    // derive runtime cleanup authority from SubagentRunner's owner.
++    expect(built.runtimeHost.delegatedWorkHost).toBe(built.subagentRunner.delegatedWorkHost);
++  });
++
+   it("/new creates a Conversation and replies", async () => {
+     const built = await makeBot();
+     await built.bot.handleUpdate(textUpdate("/new"));
+@@ -404,12 +412,12 @@ describe("buildBot integration", () => {
+     const built = await makeBot();
+     await built.bot.handleUpdate(textUpdate("/new"));
+     const conversation = built.lifecycle.inspect(dmSurface(1))!;
+-    const prior = built.agentRunners.get(conversation.id)! as unknown as MockAgentRunner;
++    const prior = built.dispatcher.getRunner(conversation.id)! as unknown as MockAgentRunner;
+ 
+     await built.bot.handleUpdate(textUpdate("/archive"));
+ 
+     expect(prior.dispose).toHaveBeenCalled();
+-    expect(built.agentRunners.has(conversation.id)).toBe(false);
++    expect(built.dispatcher.hasRunner(conversation.id)).toBe(false);
+     expect(built.api.sent.at(-1)).toContain("Conversation archived");
+   });
+ 
+@@ -417,13 +425,13 @@ describe("buildBot integration", () => {
+     const built = await makeBot();
+     await built.bot.handleUpdate(textUpdate("/new"));
+     const conversation = built.lifecycle.inspect(dmSurface(1))!;
+-    const prior = built.agentRunners.get(conversation.id)! as unknown as MockAgentRunner;
++    const prior = built.dispatcher.getRunner(conversation.id)! as unknown as MockAgentRunner;
+ 
+     await built.bot.handleUpdate(textUpdate(`/project ${built.cfg.goblinHome}`));
+ 
+     expect(projectRootOf(built.lifecycle.settings.effectiveEnvironment(dmSurface(1)))).toBe(built.cfg.goblinHome);
+     expect(prior.dispose).toHaveBeenCalled();
+-    expect(built.agentRunners.has(conversation.id)).toBe(false);
++    expect(built.dispatcher.hasRunner(conversation.id)).toBe(false);
+   });
+ 
+   it("unknown DM command without active conversation prompts for /new", async () => {
+@@ -432,6 +440,20 @@ describe("buildBot integration", () => {
+     expect(built.api.sent).toEqual(["`[info]` No active conversation\\. Use /new to start one\\."]);
+   });
+ 
++  it("drops Telegram updates after admission closes", async () => {
++    const built = await makeBot();
++    const firstClose = built.closeAdmission();
++    expect(built.closeAdmission()).toBe(firstClose);
++    await firstClose;
++
++    await built.bot.handleUpdate(textUpdate("/new"));
++    await built.bot.handleUpdate(textUpdate("/start"));
++    await built.bot.handleUpdate(textUpdate("hello"));
++
++    expect(built.lifecycle.inspect(dmSurface(1))).toBeNull();
++    expect(built.api.sent).toEqual([]);
++  });
++
+   it("text messages release the update handler while the runner is busy", async () => {
+     const built = await makeBot();
+     await built.bot.handleUpdate(textUpdate("/new"));
+@@ -668,12 +690,12 @@ describe("buildBot integration", () => {
+     const built = await makeBot();
+     await built.bot.handleUpdate(textUpdate("/new"));
+     const conversation = built.lifecycle.inspect(dmSurface(1))!;
+-    const oldRunner = built.agentRunners.get(conversation.id)!;
++    const oldRunner = built.dispatcher.getRunner(conversation.id)!;
+ 
+     await built.bot.handleUpdate(textUpdate(`/resume ${conversation.id}`));
+ 
+     expect((oldRunner as unknown as MockAgentRunner).dispose).not.toHaveBeenCalled();
+-    expect(built.agentRunners.get(conversation.id)).toBe(oldRunner);
++    expect(built.dispatcher.getRunner(conversation.id)).toBe(oldRunner);
+   });
+ 
+   it("archives orphaned topic memory when Telegram reports topic not found", async () => {
+diff --git a/src/bot.ts b/src/bot.ts
+index 94a11bb..1915897 100644
+--- a/src/bot.ts
++++ b/src/bot.ts
+@@ -21,11 +21,14 @@ import {
+   type PromptContent,
+   type TelegramIntakeMessage,
+ } from "./tg/intake.ts";
++import { createTelegramRuntimeAdapters } from "./tg/runtime-adapters.ts";
+ import { ExternalAgentRunner } from "./external-agents/mod.ts";
+ import { McpRunner } from "./mcp/mod.ts";
+ import { DelegatedWorkHost } from "./delegated-work/mod.ts";
+ import type { TurnDispatcher } from "./orchestration/dispatcher.ts";
+ import type { ConversationLifecycle } from "./orchestration/conversation-lifecycle.ts";
++import { createConversationOrchestration } from "./orchestration/composition.ts";
++import type { ConversationRuntimeHost } from "./orchestration/conversation-runtime-host.ts";
+ 
+ /**
+  * Tool factory that equips spawned subagents with spawn_subagent
+@@ -176,9 +179,12 @@ interface BuildBotOptions {
+ 
+ export interface BuiltBot {
+   bot: Bot;
++  /** Close Telegram intake and coalescing before runtime teardown. Drains
++   * admitted handlers and flushes buffered text; idempotent and single-flight. */
++  closeAdmission: () => Promise<void>;
+   lifecycle: ConversationLifecycle;
++  runtimeHost: ConversationRuntimeHost;
+   subagentRunner: SubagentRunner;
+-  agentRunners: Map<string, AgentRunner>;
+   scheduleStore: ScheduleStore;
+   dispatcher: TurnDispatcher;
+   externalAgentRunner: ExternalAgentRunner | undefined;
+@@ -189,7 +195,6 @@ export interface BuiltBot {
+ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
+   configureVoice(cfg);
+   const bot = new Bot(cfg.botToken);
+-  const runners = new Map<string, AgentRunner>();
+   const memoryEngine = options.memoryEngine ?? new MemoryEngine(cfg.goblinHome, cfg.openaiApiKey);
+   const memoryStore = memoryEngine.readStore;
+   const delegatedWorkHost = new DelegatedWorkHost(cfg.goblinHome);
+@@ -209,39 +214,78 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
+   // External agent runner is only created when at least one backend is enabled.
+   const externalAgentRunner = cfg.externalAgents?.backends.length ? new ExternalAgentRunner(cfg) : undefined;
+   const mcpRunner = cfg.mcp ? new McpRunner(cfg.mcp, cfg.goblinHome) : undefined;
+-  const intake = createTelegramIntake({
++  const telegramAdapters = createTelegramRuntimeAdapters({ cfg, bot, memoryStore });
++  const orchestration = createConversationOrchestration({
+     cfg,
+-    bot,
+     subagentRunner,
+     memoryStore,
+-    agentRunners: runners,
+     createAgentRunner: options.createAgentRunner,
++    createMessageBuffer: telegramAdapters.createMessageBuffer,
++    createBetaTools: telegramAdapters.createBetaTools,
+     scheduleStore,
+     externalAgentRunner,
+     mcpRunner,
+     embeddingProvider: memoryEngine.embeddingProvider,
+     dreamingPipeline: memoryEngine.dreaming,
+-    delegatedWorkHost,
++  });
++  const intake = createTelegramIntake({
++    cfg,
++    bot,
++    subagentRunner,
++    memoryStore,
++    dispatcher: orchestration.dispatcher,
++    lifecycle: orchestration.lifecycle,
++    scheduleStore,
++    externalAgentRunner,
+   });
+ 
+   // Text coalescer: merges Telegram-split fragments before they reach intake.
+   // One instance shared across all message:text handlers, keyed per
+   // (chatId, topicId, fromUserId). See src/tg/coalesce.ts.
+   //
+-  // The dispatch callback returns a promise so `bot.handleUpdate` can await
+-  // immediate (non-buffered) dispatches. Rejections are still caught and routed
+-  // to log.error explicitly — grammy's bot.catch only sees promises from
+-  // awaited handlers, not from setTimeout-flushed dispatches.
++  // The coalescer tracks every dispatch, including timer-originated work, and
++  // propagates failures from its close drain. Immediate handler promises still
++  // flow to grammy's error boundary.
++  let admissionOpen = true;
+   const coalescer = new TextCoalescer({
+-    dispatch: (msg, text) =>
+-      intake.handleText(msg, text).catch((err) => {
+-        log.error("handleText failed", {
+-          name: err instanceof Error ? err.name : typeof err,
+-          message: err instanceof Error ? err.message : String(err),
+-        });
+-      }),
++    dispatch: (msg, text) => intake.handleText(msg, text),
+   });
+ 
++  // Admission + drain: every update that passes the admission gate is
++  // tracked so shutdown can await the handlers grammy already admitted.
++  // grammy's `bot.stop()` stops the long-poll fetch loop but does not wait
++  // for middleware/handlers that are still running, so we drain explicitly
++  // before tearing down the runtime dependencies those handlers use.
++  const inFlightUpdates = new Set<Promise<unknown>>();
++  let draining = false;
++  function trackAdmitted(downstream: Promise<unknown>): Promise<unknown> {
++    inFlightUpdates.add(downstream);
++    const release = (): void => { inFlightUpdates.delete(downstream); };
++    void downstream.then(release, release);
++    return downstream;
++  }
++  async function drainAdmitted(): Promise<void> {
++    if (draining) return;
++    draining = true;
++    try {
++      // Handlers may settle and register follow-up promises only if they admit
++      // new updates; admission is already closed, so the set only shrinks. Loop
++      // until every admitted handler has settled.
++      while (inFlightUpdates.size > 0) {
++        await Promise.allSettled([...inFlightUpdates]);
++      }
++    } finally {
++      draining = false;
++    }
++  }
++
++  bot.use((_ctx, next) => {
++    if (!admissionOpen) {
++      log.info("Telegram update dropped after admission closed");
++      return Promise.resolve();
++    }
++    return trackAdmitted(next());
++  });
+   bot.use(buildAllowlistMiddleware(cfg));
+   registerCommands(bot, intake.lifecycle);
+ 
+@@ -364,11 +408,27 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
+     });
+   });
+ 
++  let admissionClosure: Promise<void> | undefined;
++  const closeAdmission = (): Promise<void> => {
++    if (admissionClosure) return admissionClosure;
++    // Stop admitting new updates synchronously so the middleware gate rejects
++    // anything grammy fetches next. Cache the whole drain so concurrent callers
++    // wait for the same completion or failure.
++    admissionOpen = false;
++    admissionClosure = (async (): Promise<void> => {
++      await drainAdmitted();
++      await coalescer.close();
++      intake.closeAdmission();
++    })();
++    return admissionClosure;
++  };
++
+   return {
+     bot,
++    closeAdmission,
+     lifecycle: intake.lifecycle,
++    runtimeHost: orchestration.runtimeHost,
+     subagentRunner,
+-    agentRunners: runners,
+     scheduleStore,
+     dispatcher: intake.dispatcher,
+     externalAgentRunner,
+diff --git a/src/commands/dispatch.ts b/src/commands/dispatch.ts
+index 6757528..de12927 100644
+--- a/src/commands/dispatch.ts
++++ b/src/commands/dispatch.ts
+@@ -17,8 +17,8 @@ export type { SideEffect, DispatchResult, DispatchDeps, DispatchOpts };
+  * this far while a turn is streaming, and they handle their own abort
+  * (`/cancel` calls `interruptAndCascade` inside its handler). This function is
+  * therefore Telegram-side-effect-free: it returns side effects the caller must
+- * apply. It does not mutate the grammy Context, call bot.api.*, touch the
+- * agentRunners map, or dispose runners.
++ * apply. It does not mutate the grammy Context, call bot.api.*, touch runtime
++ * registrations, or dispose runners.
+  *
+  * Returns `{ kind: "fallthrough" }` for unknown commands or grammy-only defs
+  * (no handler), so the caller continues to normal agent routing.
+diff --git a/src/commands/integration.test.ts b/src/commands/integration.test.ts
+index 6b82e58..512176a 100644
+--- a/src/commands/integration.test.ts
++++ b/src/commands/integration.test.ts
+@@ -18,7 +18,7 @@ import { executeName } from "./name.ts";
+ import { executeResume } from "./resume.ts";
+ import { sessionDir, sessionsDir, surfaceHeartbeatPath } from "../sessions/paths.ts";
+ import { createConversationLifecycle, ConversationLifecycleManager, FileSurfaceSettings, type ConversationLifecycle, type SurfaceSettings } from "../orchestration/conversation-lifecycle.ts";
+-import type { ConversationRuntimeHost } from "../orchestration/conversation-runtime-host.ts";
++import type { ConversationRuntimeHostPort } from "../orchestration/conversation-runtime-host.ts";
+ import { ConversationStore } from "../sessions/conversation-store.ts";
+ import { FileBindingStore } from "../sessions/bindings.ts";
+ import { setModelName } from "../sessions/topic-settings.ts";
+@@ -63,7 +63,7 @@ describe("rapid command spam integration", () => {
+     return conv;
+   }
+ 
+-  class FakeRuntimeHost implements ConversationRuntimeHost {
++  class FakeRuntimeHost implements ConversationRuntimeHostPort {
+     disposed: string[] = [];
+     hasRuntime(_id: ConversationId): boolean {
+       return false;
+diff --git a/src/index.ts b/src/index.ts
+index bd5348c..44b2207 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -29,7 +29,7 @@ async function main(): Promise<void> {
+   await memoryEngine.embeddingProvider.reindexIfNeeded();
+   await runPreflight(cfg);
+   await validateModelAtStartup(cfg, log);
+-  const { bot, lifecycle, subagentRunner, agentRunners, scheduleStore, dispatcher, externalAgentRunner } = buildBot(cfg, { memoryEngine });
++  const { bot, closeAdmission, lifecycle, subagentRunner, runtimeHost, scheduleStore, dispatcher, externalAgentRunner } = buildBot(cfg, { memoryEngine });
+ 
+   await memoryEngine.syncTranscripts({ maxDurationMs: DEFAULT_TRANSCRIPT_SYNC_MAX_MS });
+   await externalAgentRunner?.init();
+@@ -51,18 +51,50 @@ async function main(): Promise<void> {
+   scheduler.start();
+ 
+   // Graceful shutdown. grammy's start() resolves when stop() is called.
+-  const shutdown = async (signal: string): Promise<void> => {
+-    log.info(`received ${signal}, stopping bot`);
+-    // Stop the scheduler first so no new due schedules dispatch during shutdown.
+-    scheduler.stop();
+-    // Dispose external agents first (cancels running ones).
+-    await externalAgentRunner?.dispose();
+-    // Dispose subagents first (cancels running ones, releases sessions).
+-    await subagentRunner.dispose();
+-    // Dispose agent runners (releases pi sessions and awaits reflection).
+-    await Promise.all([...agentRunners.values()].map((runner) => runner.dispose()));
+-    await bot.stop();
+-    process.exit(0);
++  let shutdownPromise: Promise<void> | undefined;
++  const shutdown = (signal: string): Promise<void> => {
++    if (shutdownPromise) return shutdownPromise;
++    shutdownPromise = (async () => {
++      log.info(`received ${signal}, stopping bot`);
++      const failures: unknown[] = [];
++      const attempt = async (step: string, operation: () => Promise<void>): Promise<void> => {
++        try {
++          await operation();
++        } catch (error) {
++          failures.push(error);
++          log.error("shutdown step failed", {
++            step,
++            error: error instanceof Error ? error.message : String(error),
++          });
++        }
++      };
++
++      // Close both admission fences synchronously before awaiting either drain.
++      // Runtime disposal starts immediately so an active model turn can be
++      // aborted and unblock the Telegram handler that is awaiting it.
++      const telegramDrain = closeAdmission();
++      const runtimeDrain = runtimeHost.disposeAll();
++      scheduler.stop();
++
++      // Stop polling, then await both drains while deployment-wide delegated
++      // hosts remain alive: runner disposal may invoke them.
++      await attempt("telegram polling", () => bot.stop());
++      await attempt("telegram admission", () => telegramDrain);
++      await attempt("conversation runtimes", () => runtimeDrain);
++      await attempt("external agents", async () => {
++        await externalAgentRunner?.dispose();
++      });
++      await attempt("subagents", () => subagentRunner.dispose());
++
++      // Exit 0 only after complete cleanup; any failure is reported to the
++      // supervisor with a non-zero status.
++      if (failures.length > 0) {
++        log.error("shutdown completed with cleanup failures", { count: failures.length });
++        process.exit(1);
++      }
++      process.exit(0);
++    })();
++    return shutdownPromise;
+   };
+   process.on("SIGINT", () => void shutdown("SIGINT"));
+   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+diff --git a/src/orchestration/composition.ts b/src/orchestration/composition.ts
+new file mode 100644
+index 0000000..288016a
+--- /dev/null
++++ b/src/orchestration/composition.ts
+@@ -0,0 +1,86 @@
++import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
++import type { Config } from "../config.ts";
++import { AgentRunner } from "../agent/mod.ts";
++import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
++import { SubagentRunner } from "../subagents/mod.ts";
++import type { ConversationState } from "../sessions/types.ts";
++import type { Surface } from "../surface.ts";
++import type { ScheduleStore } from "../scheduler/store.ts";
++import type { ExternalAgentRunner } from "../external-agents/mod.ts";
++import type { McpRunner } from "../mcp/mod.ts";
++import {
++  createConversationLifecycle,
++  FileSurfaceSettings,
++  type ConversationLifecycle,
++} from "./conversation-lifecycle.ts";
++import { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
++import { TurnDispatcher, type TurnSink } from "./dispatcher.ts";
++
++/** Dependencies needed to assemble the Conversation runtime kernel. */
++export interface ConversationOrchestrationOptions {
++  readonly cfg: Config;
++  readonly subagentRunner: SubagentRunner;
++  readonly memoryStore: MemoryStore;
++  readonly createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
++  readonly embeddingProvider?: EmbeddingProvider;
++  readonly dreamingPipeline?: DreamingPipeline;
++  readonly createMessageBuffer: (surface: Surface, conversation?: ConversationState) => TurnSink;
++  readonly createBetaTools: (surface: Surface) => ToolDefinition[];
++  readonly scheduleStore?: ScheduleStore;
++  readonly externalAgentRunner?: ExternalAgentRunner;
++  readonly mcpRunner?: McpRunner;
++}
++
++/** The three long-lived orchestration objects and their ownership boundary. */
++export interface ConversationOrchestration {
++  readonly runtimeHost: ConversationRuntimeHost;
++  readonly lifecycle: ConversationLifecycle;
++  readonly dispatcher: TurnDispatcher;
++}
++
++/**
++ * Assemble the runtime kernel in owner order:
++ *
++ *   ConversationRuntimeHost → ConversationLifecycle → TurnDispatcher
++ *
++ * The host owns ephemeral runtime state. Lifecycle owns Binding authority. The
++ * dispatcher creates and schedules work using both, but neither Telegram nor
++ * the composition root needs a back-reference or a post-construction setter.
++ */
++export function createConversationOrchestration(
++  options: ConversationOrchestrationOptions,
++): ConversationOrchestration {
++  // SubagentRunner is constructed before this kernel and carries the single
++  // DelegatedWorkHost. ConversationRuntimeHost and TurnDispatcher both derive
++  // from that one instance, so the three can never hold different hosts: a
++  // mismatch is unrepresentable rather than asserted at runtime.
++  const delegatedWorkHost = options.subagentRunner.delegatedWorkHost;
++  const surfaceSettings = new FileSurfaceSettings(options.cfg.goblinHome);
++  const runtimeHost = new ConversationRuntimeHost({
++    delegatedWorkHost,
++    externalAgentRunner: options.externalAgentRunner,
++  });
++  const lifecycle = createConversationLifecycle(
++    options.cfg.goblinHome,
++    runtimeHost,
++    surfaceSettings,
++  );
++  const dispatcher = new TurnDispatcher({
++    cfg: options.cfg,
++    surfaceSettings,
++    subagentRunner: options.subagentRunner,
++    memoryStore: options.memoryStore,
++    runtimeHost,
++    createAgentRunner: options.createAgentRunner,
++    createMessageBuffer: options.createMessageBuffer,
++    createBetaTools: options.createBetaTools,
++    scheduleStore: options.scheduleStore,
++    externalAgentRunner: options.externalAgentRunner,
++    mcpRunner: options.mcpRunner,
++    embeddingProvider: options.embeddingProvider,
++    dreamingPipeline: options.dreamingPipeline,
++    surfaceRuntimeAuthority: lifecycle,
++  });
++
++  return { runtimeHost, lifecycle, dispatcher };
++}
+diff --git a/src/orchestration/conversation-lifecycle.test.ts b/src/orchestration/conversation-lifecycle.test.ts
+index ed5db3f..7721990 100644
+--- a/src/orchestration/conversation-lifecycle.test.ts
++++ b/src/orchestration/conversation-lifecycle.test.ts
+@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { ConversationLifecycleManager, reconcileProjectAssignmentAtColdStart } from "./conversation-lifecycle.ts";
+ import type { SurfaceSettings, ConversationLifecycle } from "./conversation-lifecycle.ts";
+-import type { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
+-import { createTurnDispatcherRuntimeHost } from "./conversation-runtime-host.ts";
++import { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
++import type { ConversationRuntimeHostPort } from "./conversation-runtime-host.ts";
+ import { TurnDispatcher, type TurnSink } from "./dispatcher.ts";
+ import { ConversationStore } from "../sessions/conversation-store.ts";
+ import type { BindingStore } from "../sessions/bindings.ts";
+@@ -52,7 +52,7 @@ class InMemoryBindingStore implements BindingStore {
+   }
+ }
+ 
+-class FakeRuntimeHost implements ConversationRuntimeHost {
++class FakeRuntimeHost implements ConversationRuntimeHostPort {
+   disposed: ConversationId[] = [];
+   active = new Set<ConversationId>();
+   throwOnNext: ConversationId | null = null;
+@@ -1131,23 +1131,21 @@ describe("ConversationLifecycle", () => {
+       const surfaceSettings = staticSettings(personalEnvironment());
+       const store = new ConversationStore(runtimeHome);
+       const bindings = new InMemoryBindingStore();
+-      let dispatcher: TurnDispatcher | undefined;
++      const runtimeHost = new ConversationRuntimeHost({
++        delegatedWorkHost: subagentRunner.delegatedWorkHost,
++      });
+       const lifecycle = new ConversationLifecycleManager(
+         runtimeHome,
+         store,
+         bindings,
+         surfaceSettings,
+-        createTurnDispatcherRuntimeHost(() => {
+-          if (dispatcher === undefined) throw new Error("runtime host used before dispatcher construction");
+-          return dispatcher;
+-        }),
++        runtimeHost,
+       );
+-      dispatcher = new TurnDispatcher({
++      const dispatcher = new TurnDispatcher({
+         cfg,
+         surfaceSettings,
+         subagentRunner,
+         memoryStore,
+-        agentRunners: new Map(),
+         createMessageBuffer: (): TurnSink => ({
+           onTextDelta: () => {},
+           onToolStart: () => {},
+@@ -1159,6 +1157,7 @@ describe("ConversationLifecycle", () => {
+         }),
+         createBetaTools: () => [],
+         createAgentRunner: (opts) => new FakeAgentRunner(opts) as unknown as AgentRunner,
++        runtimeHost,
+         surfaceRuntimeAuthority: lifecycle,
+       });
+       return { lifecycle, dispatcher };
+@@ -1173,23 +1172,21 @@ describe("ConversationLifecycle", () => {
+       const bindings = new InMemoryBindingStore();
+       const surfaceSettings = fileBasedSettings(runtimeHome);
+       const subagentRunner = new SubagentRunner(cfg);
+-      let dispatcherRef: TurnDispatcher | null = null;
++      const runtimeHost = new ConversationRuntimeHost({
++        delegatedWorkHost: subagentRunner.delegatedWorkHost,
++      });
+       const lifecycle = new ConversationLifecycleManager(
+         runtimeHome,
+         store,
+         bindings,
+         surfaceSettings,
+-        createTurnDispatcherRuntimeHost(() => {
+-          if (dispatcherRef === null) throw new Error("runtime host used before dispatcher construction");
+-          return dispatcherRef;
+-        }),
++        runtimeHost,
+       );
+       const dispatcher = new TurnDispatcher({
+         cfg,
+         surfaceSettings,
+         subagentRunner,
+         memoryStore,
+-        agentRunners: new Map(),
+         createMessageBuffer: (): TurnSink => ({
+           onTextDelta: () => {},
+           onToolStart: () => {},
+@@ -1201,9 +1198,9 @@ describe("ConversationLifecycle", () => {
+         }),
+         createBetaTools: () => [],
+         createAgentRunner: (opts) => new FakeAgentRunner(opts) as unknown as AgentRunner,
++        runtimeHost,
+         surfaceRuntimeAuthority: lifecycle,
+       });
+-      dispatcherRef = dispatcher;
+ 
+       const personal = await lifecycle.resolveOrStart(surface);
+       const personalSession = personal;
+diff --git a/src/orchestration/conversation-lifecycle.ts b/src/orchestration/conversation-lifecycle.ts
+index 9acd06c..e08cac7 100644
+--- a/src/orchestration/conversation-lifecycle.ts
++++ b/src/orchestration/conversation-lifecycle.ts
+@@ -31,8 +31,12 @@ import { isValidConversationId } from "../sessions/conversation.ts";
+ import { sessionDir } from "../sessions/paths.ts";
+ import { existsSync } from "node:fs";
+ import { log } from "../log.ts";
+-import type { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
+-import type { AttachmentSignal, AttachedWork, SurfaceRuntimeAuthority } from "./dispatcher.ts";
++import type { ConversationRuntimeHostPort } from "./conversation-runtime-host.ts";
++import type {
++  AttachmentSignal,
++  AttachedWork,
++  SurfaceRuntimeAuthority,
++} from "./surface-runtime-authority.ts";
+ import { withLifecycleTransitionLock } from "./lifecycle-transition-lock.ts";
+ import type { PreparedProjectAssignment, ProjectAssignmentIntent } from "../sessions/project-assignment.ts";
+ import {
+@@ -174,7 +178,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
+   private readonly store: ConversationStore;
+   private readonly bindings: BindingStore;
+   readonly settings: SurfaceSettings;
+-  private readonly runtimeHost: ConversationRuntimeHost;
++  private readonly runtimeHost: ConversationRuntimeHostPort;
+   private readonly skillPolicyWriter: SkillPolicyWriter;
+ 
+   constructor(
+@@ -182,7 +186,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
+     store: ConversationStore,
+     bindings: BindingStore,
+     settings: SurfaceSettings,
+-    runtimeHost: ConversationRuntimeHost,
++    runtimeHost: ConversationRuntimeHostPort,
+     skillPolicyWriter: SkillPolicyWriter = (surface, policy) => saveSkillPolicy(home, surface, policy),
+   ) {
+     this.home = home;
+@@ -809,7 +813,7 @@ function createAttachmentSignal(): MutableAttachmentSignal {
+  */
+ export function createConversationLifecycle(
+   home: string,
+-  runtimeHost: ConversationRuntimeHost,
++  runtimeHost: ConversationRuntimeHostPort,
+   settings?: SurfaceSettings,
+   skillPolicyWriter?: SkillPolicyWriter,
+ ): ConversationLifecycle {
+diff --git a/src/orchestration/conversation-runtime-host.test.ts b/src/orchestration/conversation-runtime-host.test.ts
+new file mode 100644
+index 0000000..8fcb1ec
+--- /dev/null
++++ b/src/orchestration/conversation-runtime-host.test.ts
+@@ -0,0 +1,271 @@
++import { describe, expect, it } from "bun:test";
++import type { AgentRunner } from "../agent/mod.ts";
++import type { ConversationId } from "../sessions/types.ts";
++import { dmSurface, surfaceId } from "../surface.ts";
++import {
++  asConversationRuntimeId,
++  DelegatedWorkHost,
++  type ConversationRuntimeId,
++} from "../delegated-work/mod.ts";
++import { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
++
++interface Deferred<T> {
++  readonly promise: Promise<T>;
++  readonly resolve: (value: T) => void;
++}
++
++function deferred<T>(): Deferred<T> {
++  let resolve!: (value: T) => void;
++  const promise = new Promise<T>((res) => {
++    resolve = res;
++  });
++  return { promise, resolve };
++}
++
++function fakeRunner(dispose: () => Promise<void> = async () => {}): AgentRunner {
++  return { dispose } as unknown as AgentRunner;
++}
++
++function fakeDelegatedWorkHost(): DelegatedWorkHost {
++  return {
++    invalidateRuntime: async (_runtimeId: ConversationRuntimeId): Promise<void> => {},
++  } as unknown as DelegatedWorkHost;
++}
++
++function registerRunner(
++  host: ConversationRuntimeHost,
++  conversationId: ConversationId,
++  runner: AgentRunner,
++): void {
++  host.registerSurfaceRuntime(conversationId, runner, {
++    surfaceId: surfaceId(dmSurface(1)),
++    runtimeId: asConversationRuntimeId(`runtime-${conversationId}`),
++    skillContext: { policyFingerprint: "test", manifestFingerprint: null },
++  });
++}
++
++describe("ConversationRuntimeHost shutdown", () => {
++  it("closes admission synchronously and waits for active runner disposal", async () => {
++    const disposed = deferred<void>();
++    let disposeCalls = 0;
++    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
++    registerRunner(
++      host,
++      "conversation-a",
++      fakeRunner(async () => {
++        disposeCalls += 1;
++        await disposed.promise;
++      }),
++    );
++
++    const shutdown = host.disposeAll();
++    expect(host.isAdmissionOpen()).toBe(false);
++    expect(host.hasRunner("conversation-a")).toBe(false);
++    await Promise.resolve();
++    expect(disposeCalls).toBe(1);
++    expect(() => host.reserveCreation("conversation-b", surfaceId(dmSurface(1)), "test")).toThrow(
++      /admission is closed/,
++    );
++    expect(() => host.registerInternalRuntime("conversation-c", fakeRunner())).toThrow(
++      /admission is closed/,
++    );
++    expect(host.schedule("conversation-a", () => true, async () => {}, async () => {})).toBe(false);
++
++    let settled = false;
++    void shutdown.then(() => {
++      settled = true;
++    });
++    await Promise.resolve();
++    expect(settled).toBe(false);
++
++    disposed.resolve(undefined);
++    await shutdown;
++    expect(settled).toBe(true);
++  });
++
++  it("waits for a runtime construction reservation to finish", async () => {
++    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
++    const creation = host.reserveCreation("conversation-a", surfaceId(dmSurface(1)), "test");
++
++    const shutdown = host.disposeAll();
++    expect(host.isAdmissionOpen()).toBe(false);
++    expect(host.hasRuntime("conversation-a")).toBe(false);
++
++    let settled = false;
++    void shutdown.then(() => {
++      settled = true;
++    });
++    await Promise.resolve();
++    expect(settled).toBe(false);
++
++    creation.complete();
++    await shutdown;
++    expect(settled).toBe(true);
++  });
++
++  it("disposes a running turn before draining its queue", async () => {
++    const turnFinished = deferred<void>();
++    let disposeCalls = 0;
++    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
++    const runner = fakeRunner(async () => {
++      disposeCalls += 1;
++      turnFinished.resolve(undefined);
++    });
++    registerRunner(host, "conversation-a", runner);
++    const order: string[] = [];
++
++    expect(host.schedule(
++      "conversation-a",
++      () => host.isRegisteredRunner("conversation-a", runner),
++      async () => {
++        order.push("first");
++        await turnFinished.promise;
++      },
++      async () => {},
++    )).toBe(true);
++    expect(host.schedule(
++      "conversation-a",
++      () => host.isRegisteredRunner("conversation-a", runner),
++      async () => { order.push("second"); },
++      async () => {},
++    )).toBe(true);
++
++    await host.disposeAll();
++
++    expect(disposeCalls).toBe(1);
++    expect(order).toEqual(["first"]);
++    expect(host.hasRunner("conversation-a")).toBe(false);
++  });
++
++  it("rejects runtime registration after admission closes", () => {
++    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
++    host.closeAdmission();
++
++    expect(() => host.registerSurfaceRuntime(
++      "conversation-a",
++      fakeRunner(),
++      {
++        surfaceId: surfaceId(dmSurface(1)),
++        runtimeId: asConversationRuntimeId("runtime-a"),
++        skillContext: { policyFingerprint: "test", manifestFingerprint: null },
++      },
++    )).toThrow(/admission is closed/);
++  });
++
++  it("fences a replacement invalidated while prior-generation disposal is still draining", async () => {
++    const oldRunnerDisposed = deferred<void>();
++    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
++    registerRunner(host, "conversation-a", fakeRunner(() => oldRunnerDisposed.promise));
++
++    // a: Fence the old generation, but hold its physical cleanup open.
++    const oldDisposal = host.disposeRuntime("conversation-a");
++
++    // b: A replacement reserves a newer generation and waits at the same
++    // settlement gate used by TurnDispatcher before registration.
++    const replacement = host.reserveCreation(
++      "conversation-a",
++      surfaceId(dmSurface(1)),
++      "replacement-policy",
++    );
++    const replacementRunner = fakeRunner();
++    let replacementRegistered = false;
++    const replacementAttempt = (async (): Promise<void> => {
++      await host.awaitSettled("conversation-a");
++      if (!host.isCurrentCreation("conversation-a", replacement.promise)) return;
++      host.registerSurfaceRuntime("conversation-a", replacementRunner, {
++        surfaceId: surfaceId(dmSurface(1)),
++        runtimeId: asConversationRuntimeId("runtime-replacement"),
++        skillContext: { policyFingerprint: "replacement-policy", manifestFingerprint: null },
++      });
++      replacementRegistered = true;
++    })();
++    await Promise.resolve();
++
++    // c: A second invalidation targets the replacement generation while the
++    // old generation is still disposing.
++    await host.disposeRuntime("conversation-a");
++    expect(host.isCurrentCreation("conversation-a", replacement.promise)).toBe(false);
++
++    // d: Releasing old cleanup must not let the invalidated replacement escape
++    // its creation fence and register afterward.
++    oldRunnerDisposed.resolve(undefined);
++    await oldDisposal;
++    await replacementAttempt;
++
++    expect(replacementRegistered).toBe(false);
++    expect(host.hasRunner("conversation-a")).toBe(false);
++    replacement.complete();
++  });
++
++  it("retries delegated invalidation after a failed disposal", async () => {
++    let attempts = 0;
++    const delegatedWorkHost = {
++      invalidateRuntime: async (): Promise<void> => {
++        attempts += 1;
++        if (attempts === 1) throw new Error("temporary delegated failure");
++      },
++    } as unknown as DelegatedWorkHost;
++    const host = new ConversationRuntimeHost({ delegatedWorkHost });
++    registerRunner(host, "conversation-a", fakeRunner());
++
++    await expect(host.disposeRuntime("conversation-a")).rejects.toThrow("temporary delegated failure");
++    await host.disposeRuntime("conversation-a");
++    expect(attempts).toBe(2);
++  });
++
++  it("applies a later stronger fence before deduplicating cleanup", async () => {
++    const disposed = deferred<void>();
++    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
++    registerRunner(host, "conversation-a", fakeRunner(() => disposed.promise));
++    const creation = host.reserveCreation("conversation-a", surfaceId(dmSurface(1)), "test");
++
++    const first = host.disposeRuntime("conversation-a", { preserveInFlight: creation.promise });
++    expect(host.isCurrentCreation("conversation-a", creation.promise)).toBe(true);
++    expect(host.disposeRuntime("conversation-a")).toBe(first);
++    expect(host.isCurrentCreation("conversation-a", creation.promise)).toBe(false);
++
++    disposed.resolve(undefined);
++    await first;
++    creation.complete();
++  });
++
++  it("retains a fast eager-disposal failure while another runtime queue drains", async () => {
++    const queued = deferred<void>();
++    const cleanupFailure = new Error("fast cleanup failed");
++    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
++    const queuedRunner = fakeRunner();
++    registerRunner(host, "conversation-fast", fakeRunner(async () => { throw cleanupFailure; }));
++    registerRunner(host, "conversation-queued", queuedRunner);
++    expect(host.schedule(
++      "conversation-queued",
++      () => host.isRegisteredRunner("conversation-queued", queuedRunner),
++      () => queued.promise,
++      async () => {},
++    )).toBe(true);
++
++    const shutdown = host.disposeAll();
++    // Let the eager disposal reject and leave the live active-disposal index
++    // while shutdown remains blocked on the unrelated accepted queue.
++    await Promise.resolve();
++    await Promise.resolve();
++    queued.resolve(undefined);
++
++    await expect(shutdown).rejects.toBe(cleanupFailure);
++  });
++
++  it("makes shutdown and overlapping runtime disposal single-flight", async () => {
++    const disposed = deferred<void>();
++    const host = new ConversationRuntimeHost({ delegatedWorkHost: fakeDelegatedWorkHost() });
++    registerRunner(host, "conversation-a", fakeRunner(() => disposed.promise));
++
++    const activeDisposal = host.disposeRuntime("conversation-a");
++    const shutdown = host.disposeAll();
++
++    expect(host.disposeRuntime("conversation-a")).toBe(activeDisposal);
++    expect(host.disposeAll()).toBe(shutdown);
++
++    disposed.resolve(undefined);
++    await activeDisposal;
++    await shutdown;
++  });
++});
+diff --git a/src/orchestration/conversation-runtime-host.ts b/src/orchestration/conversation-runtime-host.ts
+index b2aa944..48dc9ea 100644
+--- a/src/orchestration/conversation-runtime-host.ts
++++ b/src/orchestration/conversation-runtime-host.ts
+@@ -1,42 +1,614 @@
++import type { AgentRunner } from "../agent/mod.ts";
++import type { ExternalAgentRunner } from "../external-agents/mod.ts";
+ import type { ConversationId } from "../sessions/types.ts";
+-import type { TurnDispatcher } from "./dispatcher.ts";
++import type { SurfaceId } from "../surface.ts";
++export type {
++  AttachmentSignal,
++  AttachedWork,
++  CurrentBindingGuard,
++  SurfaceRuntimeAuthority,
++} from "./surface-runtime-authority.ts";
++import { DelegatedWorkHost, type ConversationRuntimeId } from "../delegated-work/mod.ts";
++import { log } from "../log.ts";
+ 
+ /**
+- * Narrow adapter implemented by the TurnDispatcher.
+- *
+- * A runtime host is authoritative for the in-memory AgentRunner and prompt
+- * queue. Lifecycle operations call it before mutating bindings so any queued
+- * work captured by a displaced runner is dropped before the runner can produce
+- * effects. The invalidation (runner/queue removal) is synchronous; the
+- * quiescence (AgentRunner.dispose and subagent/external cleanup) is bounded.
++ * Preserve lifecycle-command serialization while invalidating model work.
++ * Commands use Binding authority rather than a disposed runner's identity.
+  */
+ export interface RuntimeDisposalOptions {
+-  /**
+-   * Preserve lifecycle-command serialization while invalidating model work.
+-   * Commands use binding authority rather than the disposed runner's identity.
+-   */
+   readonly preserveCommandQueue?: boolean;
++  /** Keep this candidate reservation alive while replacing an old runtime. */
++  readonly preserveInFlight?: Promise<AgentRunner>;
+ }
+ 
+-export interface ConversationRuntimeHost {
+-  /** True when a runner or in-flight creation currently holds this identity. */
++/** Narrow lifecycle-facing port used by ConversationLifecycle. */
++export interface ConversationRuntimeHostPort {
+   hasRuntime(conversationId: ConversationId): boolean;
+   disposeRuntime(conversationId: ConversationId, options?: RuntimeDisposalOptions): Promise<void>;
+ }
+ 
++/** Frozen skill identity captured by one runtime generation. */
++export interface RuntimeSkillContext {
++  readonly policyFingerprint: string;
++  readonly manifestFingerprint: string | null;
++}
++
++export interface SurfaceRuntimeRegistration {
++  readonly surfaceId: SurfaceId;
++  readonly runtimeId: ConversationRuntimeId;
++  readonly skillContext: RuntimeSkillContext;
++}
++
++/** One in-flight runtime construction reservation. */
++export interface RuntimeCreation {
++  readonly conversationId: ConversationId;
++  readonly promise: Promise<AgentRunner>;
++  readonly completion: Promise<void>;
++  readonly surfaceId: SurfaceId;
++  readonly policyFingerprint: string;
++  resolve(runner: AgentRunner): void;
++  reject(error: unknown): void;
++  complete(): void;
++}
++
++interface PromptQueueEntry {
++  readonly isPrompt: boolean;
++}
++
++/** One in-flight disposal tagged with the generation it is tearing down. */
++interface ActiveDisposal {
++  readonly generation: number;
++  readonly promise: Promise<void>;
++}
++
++interface Deferred<T> {
++  readonly promise: Promise<T>;
++  readonly resolve: (value: T) => void;
++  readonly reject: (error: unknown) => void;
++}
++
++function deferred<T>(swallowRejection = false): Deferred<T> {
++  let resolve!: (value: T) => void;
++  let reject!: (error: unknown) => void;
++  const promise = new Promise<T>((res, rej) => {
++    resolve = res;
++    reject = rej;
++  });
++  if (swallowRejection) promise.catch(() => {});
++  return { promise, resolve, reject };
++}
++
+ /**
+- * Create a runtime host backed by a TurnDispatcher.
++ * Concrete owner of ephemeral ConversationRuntime state.
+  *
+- * Conversation ids share the 10-hex shape with legacy session ids, so the
+- * dispatcher's per-session runner/queue maps can be keyed by conversation id
+- * during the migration.
++ * It owns runner registration, runtime generations, in-flight construction,
++ * prompt queues, and cleanup. It does not construct runners or resolve Binding
++ * authority; those policies belong to TurnDispatcher and ConversationLifecycle.
+  */
+-export function createTurnDispatcherRuntimeHost(
+-  dispatcher: TurnDispatcher | (() => TurnDispatcher),
+-): ConversationRuntimeHost {
+-  const getDispatcher = typeof dispatcher === "function" ? dispatcher : () => dispatcher;
+-  return {
+-    hasRuntime: (conversationId) => getDispatcher().hasRuntime(conversationId),
+-    disposeRuntime: (conversationId, options) => getDispatcher().disposeRunner(conversationId, undefined, options),
+-  };
++export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
++  private readonly runners: Map<ConversationId, AgentRunner>;
++  private readonly runnerSurfaceIds = new Map<ConversationId, SurfaceId>();
++  private readonly runnerRuntimeIds = new Map<ConversationId, ConversationRuntimeId>();
++  /** Runtime IDs whose delegated-work fence has not yet succeeded. They remain
++   * retryable after the runner registration itself has been synchronously
++   * invalidated. */
++  private readonly pendingDelegatedInvalidations = new Map<ConversationId, Set<ConversationRuntimeId>>();
++  private readonly runnerSkillContexts = new Map<ConversationId, RuntimeSkillContext>();
++  private readonly internalRunnerIds = new Set<ConversationId>();
++  private readonly inFlightCreations = new Map<ConversationId, RuntimeCreation>();
++  private readonly creationReservations = new Set<RuntimeCreation>();
++  private readonly promptQueues = new Map<ConversationId, Promise<void>>();
++  private readonly promptQueueMeta = new Map<ConversationId, PromptQueueEntry>();
++  /** Every cleanup still draining, grouped by Conversation. Multiple
++   * generations may overlap when a replacement is invalidated before an older
++   * generation has physically settled. */
++  private readonly activeDisposals = new Map<ConversationId, Set<ActiveDisposal>>();
++  private readonly queuedWork = new Set<Promise<void>>();
++  /**
++   * Monotonic per-Conversation generation counter. Bumped on every runtime
++   * registration or creation reservation so disposal deduplication can tell a
++   * same-generation retry from a new generation that registered while a prior
++   * generation's cleanup was still draining.
++   */
++  private readonly generations = new Map<ConversationId, number>();
++  private admissionOpen = true;
++  private shutdownPromise: Promise<void> | undefined;
++  /**
++   * The single DelegatedWorkHost for this kernel, exposed so every orchestration
++   * component derives delegated-work access from one owner instead of carrying
++   * its own possibly-divergent instance (decision: shared delegated host).
++   */
++  readonly delegatedWorkHost: DelegatedWorkHost;
++  private readonly externalAgentRunner: ExternalAgentRunner | undefined;
++
++  constructor(options: {
++    delegatedWorkHost: DelegatedWorkHost;
++    externalAgentRunner?: ExternalAgentRunner;
++  }) {
++    this.runners = new Map<ConversationId, AgentRunner>();
++    this.delegatedWorkHost = options.delegatedWorkHost;
++    this.externalAgentRunner = options.externalAgentRunner;
++  }
++
++  /** Advance and return the next generation token for a Conversation. */
++  private nextGeneration(conversationId: ConversationId): number {
++    const next = (this.generations.get(conversationId) ?? 0) + 1;
++    this.generations.set(conversationId, next);
++    return next;
++  }
++
++  getRunner(conversationId: ConversationId): AgentRunner | null {
++    return this.runners.get(conversationId) ?? null;
++  }
++
++  hasRunner(conversationId: ConversationId): boolean {
++    return this.runners.has(conversationId);
++  }
++
++  hasRuntime(conversationId: ConversationId): boolean {
++    return this.runners.has(conversationId) || this.inFlightCreations.has(conversationId);
++  }
++
++  isAdmissionOpen(): boolean {
++    return this.admissionOpen;
++  }
++
++  /** Stop new runtime creation and queued work. Idempotent and synchronous. */
++  closeAdmission(): void {
++    if (this.admissionOpen) {
++      this.admissionOpen = false;
++      log.info("conversation runtime admission closed");
++    }
++  }
++
++  assertAdmissionOpen(): void {
++    if (!this.admissionOpen) {
++      throw new Error("conversation runtime admission is closed");
++    }
++  }
++
++  isRegisteredRunner(conversationId: ConversationId, runner: AgentRunner): boolean {
++    return this.runners.get(conversationId) === runner;
++  }
++
++  isInternalRuntime(conversationId: ConversationId): boolean {
++    return this.internalRunnerIds.has(conversationId);
++  }
++
++  surfaceIdFor(conversationId: ConversationId): SurfaceId | undefined {
++    return this.runnerSurfaceIds.get(conversationId);
++  }
++
++  runtimeIdFor(conversationId: ConversationId): ConversationRuntimeId | undefined {
++    return this.runnerRuntimeIds.get(conversationId);
++  }
++
++  skillContextFor(conversationId: ConversationId): RuntimeSkillContext | undefined {
++    return this.runnerSkillContexts.get(conversationId);
++  }
++
++  creationFor(conversationId: ConversationId): RuntimeCreation | undefined {
++    return this.inFlightCreations.get(conversationId);
++  }
++
++  reserveCreation(
++    conversationId: ConversationId,
++    surfaceId: SurfaceId,
++    policyFingerprint: string,
++  ): RuntimeCreation {
++    this.assertAdmissionOpen();
++    // A new candidate generation must be distinguishable from the generation
++    // currently being disposed, otherwise a later disposal would dedup against
++    // the stale promise and let this replacement escape fencing.
++    this.nextGeneration(conversationId);
++    const control = deferred<AgentRunner>(true);
++    const completion = deferred<void>();
++    let creation!: RuntimeCreation;
++    const complete = (): void => {
++      completion.resolve(undefined);
++      this.creationReservations.delete(creation);
++      if (this.inFlightCreations.get(conversationId) === creation) {
++        this.inFlightCreations.delete(conversationId);
++      }
++    };
++    creation = {
++      conversationId,
++      promise: control.promise,
++      completion: completion.promise,
++      surfaceId,
++      policyFingerprint,
++      resolve: control.resolve,
++      reject: control.reject,
++      complete,
++    };
++    this.inFlightCreations.set(conversationId, creation);
++    this.creationReservations.add(creation);
++    return creation;
++  }
++
++  isCurrentCreation(conversationId: ConversationId, promise: Promise<AgentRunner>): boolean {
++    return this.inFlightCreations.get(conversationId)?.promise === promise;
++  }
++
++  finishCreation(
++    conversationId: ConversationId,
++    promise: Promise<AgentRunner>,
++    creation: RuntimeCreation,
++  ): void {
++    creation.complete();
++    if (this.inFlightCreations.get(conversationId)?.promise === promise) {
++      this.inFlightCreations.delete(conversationId);
++    }
++  }
++
++  registerSurfaceRuntime(
++    conversationId: ConversationId,
++    runner: AgentRunner,
++    registration: SurfaceRuntimeRegistration,
++  ): void {
++    this.assertAdmissionOpen();
++    if ((this.activeDisposals.get(conversationId)?.size ?? 0) > 0) {
++      throw new Error(
++        `cannot register runtime for ${conversationId}: a prior-generation disposal is still active`,
++      );
++    }
++    if (this.runners.has(conversationId)) {
++      throw new Error(`Conversation runtime already registered for ${conversationId}`);
++    }
++    if (this.internalRunnerIds.has(conversationId)) {
++      throw new Error(`Conversation ${conversationId} is reserved by an internal runtime`);
++    }
++    // Commit a new generation only after the caller has drained any prior
++    // cleanup via awaitSettled; the assert above keeps the invariant loud.
++    this.nextGeneration(conversationId);
++    this.runners.set(conversationId, runner);
++    this.runnerSurfaceIds.set(conversationId, registration.surfaceId);
++    this.runnerRuntimeIds.set(conversationId, registration.runtimeId);
++    this.runnerSkillContexts.set(conversationId, registration.skillContext);
++  }
++
++  registerInternalRuntime(conversationId: ConversationId, runner: AgentRunner): void {
++    this.assertAdmissionOpen();
++    if ((this.activeDisposals.get(conversationId)?.size ?? 0) > 0) {
++      throw new Error(
++        `cannot register internal runtime for ${conversationId}: a prior-generation disposal is still active`,
++      );
++    }
++    if (this.runners.has(conversationId) && !this.internalRunnerIds.has(conversationId)) {
++      throw new Error(`cannot reuse Surface-backed runtime ${conversationId} for an internal turn`);
++    }
++    this.nextGeneration(conversationId);
++    this.runners.set(conversationId, runner);
++    this.internalRunnerIds.add(conversationId);
++  }
++
++  /**
++   * Resolve once every in-progress disposal for this Conversation has settled.
++   * A replacement generation awaits this before committing so a runner never
++   * registers while a prior generation's runner/delegated cleanup is draining.
++   */
++  async awaitSettled(conversationId: ConversationId): Promise<void> {
++    // Loop: a disposal that completes may reveal another that started against
++    // the same Conversation. Each iteration awaits one active disposal; the
++    // caller's own creation checkpoints handle any invalidation that arrived
++    // while it was suspended.
++    for (;;) {
++      const active = this.activeDisposals.get(conversationId);
++      if (active === undefined || active.size === 0) return;
++      await Promise.all([...active].map((entry) => entry.promise));
++    }
++  }
++
++  schedule(
++    conversationId: ConversationId,
++    isCurrent: () => boolean,
++    run: (isCurrent: () => boolean) => Promise<void>,
++    onError: (err: unknown) => Promise<void> | void,
++    options: { isPrompt?: boolean } = {},
++  ): boolean {
++    if (!this.admissionOpen) {
++      log.info("runtime work rejected after admission closed", { conversationId });
++      return false;
++    }
++    const execute = async (): Promise<void> => {
++      // Admission is decided once, in schedule(). Closing admission prevents
++      // new entries; it must not revoke work already accepted behind a turn.
++      if (!isCurrent()) return;
++      try {
++        await run(isCurrent);
++      } catch (err) {
++        if (!isCurrent()) return;
++        try {
++          await onError(err);
++        } catch (handlerErr) {
++          log.error("runtime queue error handler failed", {
++            conversationId,
++            error: handlerErr instanceof Error ? handlerErr.message : String(handlerErr),
++          });
++        }
++      }
++    };
++    const prior = this.promptQueues.get(conversationId);
++    const current = prior ? prior.then(execute, execute) : execute();
++    const meta: PromptQueueEntry = { isPrompt: options.isPrompt ?? true };
++    this.promptQueues.set(conversationId, current);
++    this.promptQueueMeta.set(conversationId, meta);
++    this.queuedWork.add(current);
++    const remove = (): void => {
++      this.queuedWork.delete(current);
++      if (this.promptQueues.get(conversationId) === current) this.promptQueues.delete(conversationId);
++      if (this.promptQueueMeta.get(conversationId) === meta) this.promptQueueMeta.delete(conversationId);
++    };
++    // Handle both outcomes so a caller that does not await a fire-and-forget
++    // queue cannot create an unhandled rejection while shutdown is draining it.
++    void current.then(remove, remove);
++    return true;
++  }
++
++  isCommandPending(conversationId: ConversationId): boolean {
++    const meta = this.promptQueueMeta.get(conversationId);
++    return meta !== undefined && !meta.isPrompt;
++  }
++
++  isPromptPending(conversationId: ConversationId): boolean {
++    const meta = this.promptQueueMeta.get(conversationId);
++    return meta !== undefined && meta.isPrompt;
++  }
++
++  async cancelPending(conversationId: ConversationId): Promise<boolean> {
++    const meta = this.promptQueueMeta.get(conversationId);
++    if (!meta || !meta.isPrompt) return false;
++    const runner = this.getRunner(conversationId);
++    if (runner && !runner.isStreaming) await runner.abort();
++    return true;
++  }
++
++  /**
++   * Invalidate synchronously, then await runner and external-work cleanup.
++   *
++   * Deduplication is generation-aware: a second call for the SAME generation
++   * shares the in-flight disposal promise, but a call made after a newer
++   * generation registered (or reserved a creation) starts a fresh disposal so
++   * the replacement cannot hide behind the prior generation's promise.
++   */
++  disposeRuntime(
++    conversationId: ConversationId,
++    disposalOptions?: RuntimeDisposalOptions,
++  ): Promise<void> {
++    const currentGeneration = this.generations.get(conversationId) ?? 0;
++
++    // Every caller applies its requested authority fence, even when physical
++    // cleanup for this generation is already in flight. A later stronger call
++    // can therefore revoke a creation or command queue that an earlier call
++    // deliberately preserved.
++    const cleanup = this.fenceRuntime(conversationId, disposalOptions);
++
++    const active = this.activeDisposals.get(conversationId);
++    const existing = active === undefined
++      ? undefined
++      : [...active].find((entry) => entry.generation === currentGeneration);
++    if (existing !== undefined) return existing.promise;
++
++    const disposal = this.disposeRuntimeOnce(conversationId, cleanup);
++    const entry: ActiveDisposal = { generation: currentGeneration, promise: disposal };
++    const entries = active ?? new Set<ActiveDisposal>();
++    entries.add(entry);
++    this.activeDisposals.set(conversationId, entries);
++    const clearActiveDisposal = (): void => {
++      entries.delete(entry);
++      if (entries.size === 0 && this.activeDisposals.get(conversationId) === entries) {
++        this.activeDisposals.delete(conversationId);
++      }
++    };
++    // Keep the returned promise's identity stable for concurrent callers and
++    // handle both outcomes on the cleanup observer so a rejected disposal is
++    // reported to its caller without creating a second unhandled rejection.
++    void disposal.then(clearActiveDisposal, clearActiveDisposal);
++    return disposal;
++  }
++
++  private fenceRuntime(
++    conversationId: ConversationId,
++    disposalOptions?: RuntimeDisposalOptions,
++  ): { runner: AgentRunner | undefined; runtimeIds: ConversationRuntimeId[] } {
++    const prior = this.runners.get(conversationId);
++    const runtimeId = this.runnerRuntimeIds.get(conversationId);
++    if (runtimeId !== undefined) {
++      const pending = this.pendingDelegatedInvalidations.get(conversationId) ?? new Set();
++      pending.add(runtimeId);
++      this.pendingDelegatedInvalidations.set(conversationId, pending);
++    }
++
++    // This is the authority fence. No queued work or late runner event can
++    // observe the old registration after this synchronous section.
++    this.runners.delete(conversationId);
++    this.runnerSurfaceIds.delete(conversationId);
++    this.runnerRuntimeIds.delete(conversationId);
++    this.runnerSkillContexts.delete(conversationId);
++    this.internalRunnerIds.delete(conversationId);
++
++    const currentCreation = this.inFlightCreations.get(conversationId);
++    const preserveInFlight = disposalOptions?.preserveInFlight;
++    if (!preserveInFlight || currentCreation?.promise !== preserveInFlight) {
++      this.inFlightCreations.delete(conversationId);
++    }
++
++    const pendingQueueMeta = this.promptQueueMeta.get(conversationId);
++    const preserveCommandQueue = disposalOptions?.preserveCommandQueue === true && pendingQueueMeta?.isPrompt === false;
++    if (!preserveCommandQueue) {
++      this.promptQueues.delete(conversationId);
++      this.promptQueueMeta.delete(conversationId);
++    }
++
++    return {
++      runner: prior,
++      runtimeIds: [...(this.pendingDelegatedInvalidations.get(conversationId) ?? [])],
++    };
++  }
++
++  private async disposeRuntimeOnce(
++    conversationId: ConversationId,
++    cleanup: { runner: AgentRunner | undefined; runtimeIds: ConversationRuntimeId[] },
++  ): Promise<void> {
++    const prior = cleanup.runner;
++    const delegatedFailures: unknown[] = [];
++    // Start delegated fencing immediately, but do not await it before invoking
++    // runner.dispose(): both cleanup boundaries should make progress together.
++    const delegatedInvalidation = Promise.all(cleanup.runtimeIds.map(async (runtimeId) => {
++      try {
++        await this.delegatedWorkHost.invalidateRuntime(runtimeId);
++        const pending = this.pendingDelegatedInvalidations.get(conversationId);
++        pending?.delete(runtimeId);
++        if (pending?.size === 0) this.pendingDelegatedInvalidations.delete(conversationId);
++      } catch (error) {
++        delegatedFailures.push(error);
++        log.error("delegated work invalidation failed in runtime disposal", {
++          conversationId,
++          runtimeId,
++          error: error instanceof Error ? error.message : String(error),
++        });
++      }
++    }));
++
++    let runnerError: unknown;
++    let runnerFailed = false;
++    if (prior) {
++      try {
++        await prior.dispose();
++      } catch (error) {
++        runnerFailed = true;
++        runnerError = error;
++        log.error("AgentRunner.dispose failed in runtime disposal", {
++          conversationId,
++          error: error instanceof Error ? error.message : String(error),
++        });
++      }
++    }
++
++    await delegatedInvalidation;
++
++    let externalTimer: ReturnType<typeof setTimeout> | undefined;
++    const externalCancellation = this.externalAgentRunner
++      ? this.externalAgentRunner.cancelBySession(conversationId).catch((error: unknown) => {
++          log.error("external-agent cancellation failed in runtime disposal", {
++            conversationId,
++            error: error instanceof Error ? error.message : String(error),
++          });
++        })
++      : Promise.resolve();
++    const timeout = new Promise<void>((resolve) => {
++      externalTimer = setTimeout(() => {
++        log.warn("external-agent cancellation timed out in runtime disposal", { conversationId });
++        resolve();
++      }, 10_000);
++    });
++    try {
++      await Promise.race([externalCancellation, timeout]);
++    } finally {
++      if (externalTimer !== undefined) clearTimeout(externalTimer);
++    }
++
++    const failures: unknown[] = [];
++    if (runnerFailed) failures.push(runnerError);
++    failures.push(...delegatedFailures);
++    if (failures.length === 1) throw failures[0];
++    if (failures.length > 1) throw new AggregateError(failures, "Conversation runtime cleanup failed");
++  }
++
++  disposeAll(): Promise<void> {
++    if (this.shutdownPromise) return this.shutdownPromise;
++    this.closeAdmission();
++
++    // Fence every runtime immediately. Shutdown must be able to abort a model
++    // turn that would otherwise keep its admitted Telegram handler alive
++    // indefinitely. Queue promises are still drained below, but entries behind
++    // the invalidated generation fail their isCurrent() guard instead of
++    // starting new work during shutdown.
++    const ids = new Set([
++      ...this.runners.keys(),
++      ...this.inFlightCreations.keys(),
++      ...this.pendingDelegatedInvalidations.keys(),
++    ]);
++    const eagerDisposals = [...ids].map((conversationId) => this.disposeRuntime(conversationId));
++
++    this.shutdownPromise = this.disposeAllOnce(eagerDisposals);
++    return this.shutdownPromise;
++  }
++
++  private async disposeAllOnce(eagerDisposals: readonly Promise<void>[]): Promise<void> {
++    const failures: unknown[] = [];
++    // Drain accepted queue chains after their runtime generations have been
++    // fenced. A currently executing turn is unblocked by runner disposal;
++    // queued entries observe stale authority and do not begin during shutdown.
++    for (;;) {
++      const accepted = await Promise.allSettled([...this.queuedWork]);
++      failures.push(
++        ...accepted
++          .filter((result): result is PromiseRejectedResult => result.status === "rejected")
++          .map((result) => result.reason),
++      );
++      if (this.queuedWork.size === 0) break;
++    }
++
++    // Eager cleanup started before the queue drain so idle runtimes were fenced
++    // synchronously. Retain those exact promises until now: activeDisposals is
++    // only a live-work index, so a fast rejection may have left that map while
++    // an unrelated queue was still draining.
++    const eagerResults = await Promise.allSettled(eagerDisposals);
++    failures.push(
++      ...eagerResults
++        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
++        .map((result) => result.reason),
++    );
++
++    // Constructions and physical cleanup can now be fenced and drained. Retry
++    // each delegated invalidation left by an earlier failed disposal once in
++    // this shutdown attempt; persistent failure is reported rather than spun.
++    const attemptedPendingInvalidations = new Set<ConversationId>();
++    for (;;) {
++      const creations = [...this.creationReservations];
++      const retryablePending = [...this.pendingDelegatedInvalidations.keys()].filter(
++        (conversationId) => !attemptedPendingInvalidations.has(conversationId),
++      );
++      retryablePending.forEach((conversationId) => attemptedPendingInvalidations.add(conversationId));
++      const ids = new Set([
++        ...this.runners.keys(),
++        ...this.inFlightCreations.keys(),
++        ...this.activeDisposals.keys(),
++        ...retryablePending,
++        ...creations.map((creation) => creation.conversationId),
++      ]);
++      const disposals = [...ids].map((conversationId) => this.disposeRuntime(conversationId));
++      const results = await Promise.allSettled([
++        ...disposals,
++        ...creations.map((creation) => creation.completion),
++      ]);
++      failures.push(
++        ...results
++          .filter((result): result is PromiseRejectedResult => result.status === "rejected")
++          .map((result) => result.reason),
++      );
++
++      // Cleanup observers remove settled active disposals and queue entries in
++      // promise reactions. Yield once before checking the owner state so the
++      // shutdown promise cannot resolve while one of those entries is still
++      // visible as active.
++      await Promise.resolve();
++      if (
++        this.runners.size === 0 &&
++        this.inFlightCreations.size === 0 &&
++        this.creationReservations.size === 0 &&
++        this.activeDisposals.size === 0 &&
++        this.queuedWork.size === 0
++      ) {
++        break;
++      }
++    }
++
++    if (failures.length === 1) {
++      const failure = failures[0];
++      throw failure instanceof Error ? failure : new Error(String(failure));
++    }
++    if (failures.length > 1) throw new AggregateError(failures, "Conversation runtime shutdown failed");
++  }
+ }
+diff --git a/src/orchestration/dispatcher.test.ts b/src/orchestration/dispatcher.test.ts
+index 455c113..3650a62 100644
+--- a/src/orchestration/dispatcher.test.ts
++++ b/src/orchestration/dispatcher.test.ts
+@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { TurnDispatcher } from "./dispatcher.ts";
++import { ConversationRuntimeHost } from "./conversation-runtime-host.ts";
+ import type { AttachmentSignal, AttachedWork, SurfaceRuntimeAuthority } from "./dispatcher.ts";
+ import type { AgentRunner } from "../agent/mod.ts";
+ import type { SubagentRunner } from "../subagents/mod.ts";
+@@ -20,7 +21,7 @@ import { dmSurface, surfaceId } from "../surface.ts";
+ import type { TranscriptWriterContext } from "../sessions/transcript.ts";
+ import { DEFAULT_SKILL_POLICY, type SkillPolicy } from "../agent/skills/mod.ts";
+ import type { GenericSubagentInheritance } from "../subagents/mod.ts";
+-import type { ConversationRuntimeId, DelegatedWorkHost } from "../delegated-work/mod.ts";
++import { DelegatedWorkHost, type ConversationRuntimeId } from "../delegated-work/mod.ts";
+ 
+ class FakeAgentRunner {
+   disposeCalled = false;
+@@ -180,7 +181,6 @@ class FakeMemoryStore {
+ 
+ function buildDispatcher(
+   opts: {
+-    runners?: Map<string, AgentRunner>;
+     subagentRunner?: SubagentRunner;
+     surfaceEnv?: ExecutionEnvironment;
+     surfaceModelName?: string;
+@@ -190,12 +190,11 @@ function buildDispatcher(
+   } = {},
+ ): {
+   dispatcher: TurnDispatcher;
+-  runners: Map<string, AgentRunner>;
++  runtimeHost: ConversationRuntimeHost;
+   subagentRunner: FakeSubagentRunner;
+   betaSurfaces: Surface[];
+   createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][];
+ } {
+-  const runners = opts.runners ?? new Map<string, AgentRunner>();
+   const subagentRunner = (opts.subagentRunner ?? new FakeSubagentRunner()) as unknown as SubagentRunner;
+   const surfaceEnv = opts.surfaceEnv ?? personalEnvironment();
+   const surfaceModelName = opts.surfaceModelName;
+@@ -216,13 +215,14 @@ function buildDispatcher(
+     return o as unknown as AgentRunner;
+   });
+ 
++  const delegatedWorkHost = new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost;
++  const runtimeHost = new ConversationRuntimeHost({ delegatedWorkHost });
+   const dispatcher = new TurnDispatcher({
+     cfg: {} as Config,
+     surfaceSettings,
+     subagentRunner,
+     memoryStore: new FakeMemoryStore() as unknown as MemoryStore,
+-    agentRunners: runners,
+-    delegatedWorkHost: new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost,
++    runtimeHost,
+     createMessageBuffer: (_surface: Surface, _session?: ConversationState): TurnSink => ({
+       onTextDelta: () => {},
+       onToolStart: () => {},
+@@ -240,7 +240,19 @@ function buildDispatcher(
+     surfaceRuntimeAuthority: opts.surfaceRuntimeAuthority ?? permissiveRuntimeAuthority(),
+   });
+ 
+-  return { dispatcher, runners, subagentRunner: subagentRunner as unknown as FakeSubagentRunner, betaSurfaces, createAgentRunnerCalls };
++  return { dispatcher, runtimeHost, subagentRunner: subagentRunner as unknown as FakeSubagentRunner, betaSurfaces, createAgentRunnerCalls };
++}
++
++function registerTestSurfaceRunner(
++  runtimeHost: ConversationRuntimeHost,
++  conversationId: string,
++  runner: AgentRunner,
++): void {
++  runtimeHost.registerSurfaceRuntime(conversationId, runner, {
++    surfaceId: surfaceId(dmSurface(1)),
++    runtimeId: DelegatedWorkHost.newRuntimeId(),
++    skillContext: { policyFingerprint: "test", manifestFingerprint: null },
++  });
+ }
+ 
+ function makeSession(id: string, env: ExecutionEnvironment = personalEnvironment()): ConversationState {
+@@ -342,11 +354,11 @@ function fakeCapturedContext(): CapturedMemoryContext {
+ 
+ describe("TurnDispatcher runtime host support", () => {
+   it("removes runner and queue map entries synchronously before awaiting dispose", async () => {
+-    const { dispatcher, runners } = buildDispatcher();
++    const { dispatcher, runtimeHost } = buildDispatcher();
+     const session = makeSession("abc123def0");
+     const runner = new FakeAgentRunner();
+     runner.disposeDelayMs = 50;
+-    runners.set(session.id, runner as unknown as AgentRunner);
++    registerTestSurfaceRunner(runtimeHost, session.id, runner as unknown as AgentRunner);
+ 
+     expect(dispatcher.hasRunner(session.id)).toBe(true);
+     const disposePromise = dispatcher.disposeRunner(session.id);
+@@ -358,10 +370,10 @@ describe("TurnDispatcher runtime host support", () => {
+   });
+ 
+   it("does not enumerate subagents during runtime disposal", async () => {
+-    const { dispatcher, runners, subagentRunner } = buildDispatcher();
++    const { dispatcher, runtimeHost, subagentRunner } = buildDispatcher();
+     const session = makeSession("abc123def0");
+     const runner = new FakeAgentRunner();
+-    runners.set(session.id, runner as unknown as AgentRunner);
++    registerTestSurfaceRunner(runtimeHost, session.id, runner as unknown as AgentRunner);
+ 
+     await dispatcher.disposeRunner(session.id);
+     expect(subagentRunner.cancelled).toEqual([]);
+@@ -369,11 +381,11 @@ describe("TurnDispatcher runtime host support", () => {
+   });
+ 
+   it("does not recreate a disposed runner while dispose is in flight", async () => {
+-    const { dispatcher, runners } = buildDispatcher();
++    const { dispatcher, runtimeHost } = buildDispatcher();
+     const session = makeSession("abc123def0");
+     const runner = new FakeAgentRunner();
+     runner.disposeDelayMs = 50;
+-    runners.set(session.id, runner as unknown as AgentRunner);
++    registerTestSurfaceRunner(runtimeHost, session.id, runner as unknown as AgentRunner);
+ 
+     const disposePromise = dispatcher.disposeRunner(session.id);
+     // Synchronous: the runner is gone before dispose resolves.
+@@ -446,14 +458,14 @@ describe("TurnDispatcher runtime host support", () => {
+   });
+ 
+   it("rejects reuse of a Surface-backed runner for an internal identity collision", () => {
+-    const { dispatcher, runners } = buildDispatcher();
++    const { dispatcher, runtimeHost } = buildDispatcher();
+     const internal: InternalSessionState = {
+       id: "__internal_test__",
+       createdAt: new Date().toISOString(),
+       chatId: 0,
+       executionEnvironment: personalEnvironment(),
+     };
+-    runners.set(internal.id, new FakeAgentRunner() as unknown as AgentRunner);
++    registerTestSurfaceRunner(runtimeHost, internal.id, new FakeAgentRunner() as unknown as AgentRunner);
+ 
+     expect(() => dispatcher.enqueueInternalTurn(internal, "test prompt", () => {}, () => {}))
+       .toThrow(/Surface-backed runtime/);
+@@ -510,11 +522,10 @@ describe("TurnDispatcher async runner creation", () => {
+     } = {},
+   ): {
+     dispatcher: TurnDispatcher;
+-    runners: Map<string, AgentRunner>;
++    runtimeHost: ConversationRuntimeHost;
+     subagentRunner: FakeSubagentRunner;
+     createAgentRunnerCalls: ConstructorParameters<typeof AgentRunner>[0][];
+   } {
+-    const runners = new Map<string, AgentRunner>();
+     const subagentRunner = new FakeSubagentRunner();
+     const surfaceSettings: SurfaceSettings = {
+       effectiveEnvironment: (_surface: Surface): ExecutionEnvironment => personalEnvironment(),
+@@ -541,14 +552,14 @@ describe("TurnDispatcher async runner creation", () => {
+       return runner as unknown as AgentRunner;
+     });
+     const delegatedWorkHost = opts.delegatedWorkHost ?? new FakeDelegatedWorkHost() as unknown as DelegatedWorkHost;
++    const runtimeHost = new ConversationRuntimeHost({ delegatedWorkHost });
+ 
+     const dispatcher = new TurnDispatcher({
+       cfg: opts.cfg ?? ({} as Config),
+       surfaceSettings,
+       subagentRunner: subagentRunner as unknown as SubagentRunner,
+-      delegatedWorkHost,
+       memoryStore,
+-      agentRunners: runners,
++      runtimeHost,
+       createMessageBuffer: (_surface: Surface, _session?: ConversationState): TurnSink => ({
+         onTextDelta: () => {},
+         onToolStart: () => {},
+@@ -563,7 +574,7 @@ describe("TurnDispatcher async runner creation", () => {
+       surfaceRuntimeAuthority: opts.surfaceRuntimeAuthority ?? permissiveRuntimeAuthority(),
+     });
+ 
+-    return { dispatcher, runners, subagentRunner, createAgentRunnerCalls };
++    return { dispatcher, runtimeHost, subagentRunner, createAgentRunnerCalls };
+   }
+ 
+   it("eagerly freezes the Surface policy and resolved manifest at runtime creation", async () => {
+@@ -735,7 +746,7 @@ describe("TurnDispatcher async runner creation", () => {
+     // Close the memory store so captureRuntimeMemoryContext rejects when it
+     // tries to read. This proves a failed capture leaves no half-created
+     // runtime and the in-flight entry is cleared for subsequent creation.
+-    const { dispatcher, createAgentRunnerCalls, runners } = buildAsyncDispatcher();
++    const { dispatcher, createAgentRunnerCalls, runtimeHost } = buildAsyncDispatcher();
+     const session = makeSession("abc123def0");
+ 
+     // Close the store so the capture's store.read throws.
+@@ -743,7 +754,7 @@ describe("TurnDispatcher async runner creation", () => {
+ 
+     await expect(dispatcher.getOrCreateRunner(session, dmSurface(1))).rejects.toThrow();
+     expect(createAgentRunnerCalls).toHaveLength(0);
+-    expect(runners.has(session.id)).toBe(false);
++    expect(runtimeHost.hasRunner(session.id)).toBe(false);
+ 
+     // Reopen the store and verify a subsequent creation can proceed — the
+     // in-flight entry was cleared by the failed creation's finally block.
+diff --git a/src/orchestration/dispatcher.ts b/src/orchestration/dispatcher.ts
+index f189fab..905e091 100644
+--- a/src/orchestration/dispatcher.ts
++++ b/src/orchestration/dispatcher.ts
+@@ -31,21 +31,14 @@ import {
+   type SkillPolicy,
+ } from "../agent/skills/mod.ts";
+ import type { SurfaceSettings } from "./conversation-lifecycle.ts";
+-import type { RuntimeDisposalOptions } from "./conversation-runtime-host.ts";
++import { ConversationRuntimeHost, type RuntimeDisposalOptions } from "./conversation-runtime-host.ts";
++import type { SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
++export type { AttachmentSignal, AttachedWork, CurrentBindingGuard, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
+ export type { SurfaceSettings };
+ 
+ /** Prompt content accepted by a runner: a string or multimodal parts. */
+ export type PromptContent = string | (TextContent | ImageContent)[];
+ 
+-/** Metadata stored alongside each queued prompt chain entry. */
+-interface PromptQueueEntry {
+-  /** True for actual prompt turns; false for deferred commands. */
+-  isPrompt: boolean;
+-}
+-
+-/** Maximum time `disposeRunner` waits for legacy external-agent cleanup. */
+-const DISPOSE_RUNNER_CANCEL_TIMEOUT_MS = 10_000;
+-
+ /**
+  * The opaque sink a turn dispatches through — the subset of `MessageBuffer`
+  * that `runner.prompt(content, sink)` consumes. Typed as `TurnCallbacks` so the
+@@ -63,68 +56,13 @@ function buildGetTopicName(store: MemoryStore): (chatId: number, topicId: number
+   };
+ }
+ 
+-/**
+- * Signal supplied to work running under {@link CurrentBindingGuard}. The work
+- * calls `attached()` once it has acquired the resources it needs from the current
+- * binding; the guard releases the lifecycle transition lock at that point. If
+- * the work fails before `attached()` is called, it may call `failed(err)` to
+- * reject the attachment promise and release the lock.
+- */
+-export interface AttachmentSignal {
+-  /** True once `attached()` or `failed()` has been called. */
+-  readonly settled: boolean;
+-  attached(): void;
+-  failed(err: unknown): void;
+-}
+-
+-/**
+- * Non-terminal value returned by work running under {@link CurrentBindingGuard}.
+- * The guard releases the transition lock as soon as the work is attached; the
+- * caller is responsible for awaiting the terminal `result` after the guard
+- * resolves.
+- */
+-export interface AttachedWork<T> {
+-  result: Promise<T>;
+-  runner?: AgentRunner;
+-}
+-
+-/**
+- * Lifecycle-provided guard that runs work while excluding binding replacement.
+- *
+- * The implementation is owned by `ConversationLifecycle`; the dispatcher only
+- * consumes the seam. The guard verifies that the requested Surface is still bound
+- * to the expected conversation before running `fn`, holds the transition
+- * exclusion only until the work signals attachment, and then returns an
+- * {@link AttachedWork} carrying the terminal result. It never awaits the
+- * terminal result under the lock.
+- */
+-export interface CurrentBindingGuard {
+-  withCurrentBinding<T>(
+-    surface: Surface,
+-    conversationId: string,
+-    fn: (signal: AttachmentSignal) => Promise<AttachedWork<T>>,
+-  ): Promise<AttachedWork<T>>;
+-}
+-
+-/**
+- * Lifecycle-owned authority required for every Surface-backed runtime. The
+- * asynchronous acquisition check reconciles pending cross-file transitions;
+- * the synchronous check is closed over by AgentRunner so stale work cannot
+- * prompt or mutate tools after a binding changes.
+- */
+-export interface SurfaceRuntimeAuthority extends CurrentBindingGuard {
+-  assertCurrentBinding(surface: Surface, conversationId: string): Promise<void>;
+-  isCurrentBinding(surface: Surface, conversationId: string): boolean;
+-}
+-
+ export interface TurnDispatcherOptions {
+   cfg: Config;
+   surfaceSettings: SurfaceSettings;
+   subagentRunner: SubagentRunner;
+   memoryStore: MemoryStore;
+-  agentRunners: Map<string, AgentRunner>;
+-  promptQueues?: Map<string, Promise<void>>;
+-  promptQueueMeta?: Map<string, PromptQueueEntry>;
++  /** The single owner of runtime state, supplied by the composition root. */
++  runtimeHost: ConversationRuntimeHost;
+   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
+   /**
+    * Shared embedding provider for agent memory stores. When present, each
+@@ -159,8 +97,6 @@ export interface TurnDispatcherOptions {
+   externalAgentRunner?: ExternalAgentRunner;
+   /** Shared MCP runner. When present and configured, it is wired into every new `AgentRunner`. */
+   mcpRunner?: McpRunner;
+-  /** Shared delegated-work policy host. */
+-  delegatedWorkHost?: DelegatedWorkHost;
+   /**
+    * Mandatory lifecycle-owned authority for Surface-backed runtime acquisition,
+    * stale-runner checks, and attached subagent revival. Internal runtimes use
+@@ -170,10 +106,11 @@ export interface TurnDispatcherOptions {
+ }
+ 
+ /**
+- * Shared turn dispatcher: owns `AgentRunner` creation, per-session fresh-turn
+- * queues, turn-sink creation, and runner disposal. Both Telegram intake and the
+- * scheduled-turn scheduler dispatch through this so a due scheduled prompt and
+- * a Telegram message serialize through the same per-session chain.
++ * Shared turn dispatcher: owns `AgentRunner` construction and turn execution;
++ * `ConversationRuntimeHost` owns runtime registration, per-Conversation queues,
++ * and disposal. Both Telegram intake and the scheduled-turn scheduler dispatch
++ * through this kernel so a due scheduled prompt and a Telegram message share
++ * the same serialization boundary.
+  *
+  * The stale-runner guard (`isCurrent()`) is the linchpin: when a runner is
+  * swapped (by `/new` or `/resume`) before a queued turn starts, the queued work
+@@ -186,27 +123,8 @@ export interface TurnDispatcherOptions {
+  * `createMessageBuffer` factory.
+  */
+ export class TurnDispatcher {
+-  private readonly runners: Map<string, AgentRunner>;
+-  /** Surface a runner was created for, keyed by session/conversation id. */
+-  private readonly runnerSurfaceIds: Map<string, SurfaceId>;
+-  /** Stable identity for each Conversation runtime generation. */
+-  private readonly runnerRuntimeIds: Map<string, ConversationRuntimeId>;
+-  /** Frozen skill-policy and manifest identity captured by each runtime. */
+-  private readonly runnerSkillContexts: Map<string, { policyFingerprint: string; manifestFingerprint: string | null }>;
+-  /** Compatibility internal runtimes intentionally have no Surface authority. */
+-  private readonly internalRunnerIds: Set<string>;
+-  /**
+-   * In-flight runner creation, keyed by session id. Stores the promise AND
+-   * the destination surface id. Deduplicates concurrent creation only for
+-   * the same (session, surface) — a request for a different surface overwrites
+-   * the entry, causing the prior creation's post-capture recheck to fail.
+-   */
+-  private readonly inFlightCreations: Map<string, {
+-    promise: Promise<AgentRunner>;
+-    surfaceId: SurfaceId;
+-    policyFingerprint: string;
+-  }>;
+-  private readonly promptQueues: Map<string, Promise<void>>;
++  /** Concrete owner of runner registration, in-flight creation, and queues. */
++  private readonly runtimeHost: ConversationRuntimeHost;
+   private readonly cfg: Config;
+   private readonly surfaceSettings: SurfaceSettings;
+   private readonly subagentRunner: SubagentRunner;
+@@ -217,11 +135,9 @@ export class TurnDispatcher {
+   private readonly createMessageBufferFn: (surface: Surface, conversation?: ConversationState) => TurnSink;
+   private readonly createBetaToolsFn: (surface: Surface) => ToolDefinition[];
+   private readonly getTopicName: (chatId: number, topicId: number) => Promise<string | null>;
+-  private readonly promptQueueMeta: Map<string, PromptQueueEntry>;
+   private readonly scheduleStore: ScheduleStore | undefined;
+   private readonly externalAgentRunner: ExternalAgentRunner | undefined;
+   private readonly mcpRunner: McpRunner | undefined;
+-  private readonly delegatedWorkHost: DelegatedWorkHost;
+   private readonly surfaceRuntimeAuthority: SurfaceRuntimeAuthority;
+ 
+   constructor(options: TurnDispatcherOptions) {
+@@ -231,14 +147,6 @@ export class TurnDispatcher {
+     this.memoryStore = options.memoryStore;
+     this.embeddingProvider = options.embeddingProvider;
+     this.dreamingPipeline = options.dreamingPipeline;
+-    this.runners = options.agentRunners;
+-    this.runnerSurfaceIds = new Map<string, SurfaceId>();
+-    this.runnerRuntimeIds = new Map<string, ConversationRuntimeId>();
+-    this.runnerSkillContexts = new Map();
+-    this.internalRunnerIds = new Set<string>();
+-    this.inFlightCreations = new Map();
+-    this.promptQueues = options.promptQueues ?? new Map<string, Promise<void>>();
+-    this.promptQueueMeta = options.promptQueueMeta ?? new Map<string, PromptQueueEntry>();
+     this.createAgentRunner = options.createAgentRunner;
+     this.createMessageBufferFn = options.createMessageBuffer;
+     this.createBetaToolsFn = options.createBetaTools;
+@@ -246,17 +154,7 @@ export class TurnDispatcher {
+     this.scheduleStore = options.scheduleStore;
+     this.externalAgentRunner = options.externalAgentRunner;
+     this.mcpRunner = options.mcpRunner;
+-    const runnerDelegatedWorkHost = options.subagentRunner.delegatedWorkHost;
+-    if (
+-      options.delegatedWorkHost !== undefined &&
+-      runnerDelegatedWorkHost !== undefined &&
+-      options.delegatedWorkHost !== runnerDelegatedWorkHost
+-    ) {
+-      throw new Error("TurnDispatcher and SubagentRunner must share one DelegatedWorkHost");
+-    }
+-    // The runner is the registration owner; an explicitly supplied host is
+-    // only a composition-root assertion/fallback for narrow test doubles.
+-    this.delegatedWorkHost = runnerDelegatedWorkHost ?? options.delegatedWorkHost ?? new DelegatedWorkHost(options.cfg.goblinHome);
++    this.runtimeHost = options.runtimeHost;
+     this.surfaceRuntimeAuthority = options.surfaceRuntimeAuthority;
+   }
+ 
+@@ -265,7 +163,7 @@ export class TurnDispatcher {
+    * direct reads of the (now-private) `runners` map.
+    */
+   getRunner(sessionId: string): AgentRunner | null {
+-    return this.runners.get(sessionId) ?? null;
++    return this.runtimeHost.getRunner(sessionId);
+   }
+ 
+   /**
+@@ -273,12 +171,12 @@ export class TurnDispatcher {
+    * `runners.has(...)` reads of the (now-private) map.
+    */
+   hasRunner(sessionId: string): boolean {
+-    return this.runners.has(sessionId);
++    return this.runtimeHost.hasRunner(sessionId);
+   }
+ 
+   /** True when a runner or an in-flight runtime construction owns this id. */
+   hasRuntime(sessionId: string): boolean {
+-    return this.runners.has(sessionId) || this.inFlightCreations.has(sessionId);
++    return this.runtimeHost.hasRuntime(sessionId);
+   }
+ 
+   /**
+@@ -296,6 +194,7 @@ export class TurnDispatcher {
+     resolvedSkills?: ResolvedSkillSet,
+     runtimeId: ConversationRuntimeId = DelegatedWorkHost.newRuntimeId(),
+   ): AgentRunner {
++    this.runtimeHost.assertAdmissionOpen();
+     if (!this.surfaceRuntimeAuthority.isCurrentBinding(surface, session.id)) {
+       throw new Error(`cannot construct runtime for stale binding: ${surfaceId(surface)} → ${session.id}`);
+     }
+@@ -340,7 +239,7 @@ export class TurnDispatcher {
+       embeddingProvider: this.embeddingProvider,
+       dreamingPipeline: this.dreamingPipeline,
+       isCurrent: () =>
+-        this.runners.get(session.id) === runner &&
++        this.runtimeHost.isRegisteredRunner(session.id, runner) &&
+         this.surfaceRuntimeAuthority.isCurrentBinding(surface, session.id),
+     };
+     runner = this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
+@@ -378,8 +277,8 @@ export class TurnDispatcher {
+       surface,
+       session.id,
+       async (signal) => {
+-        const runner = this.runners.get(session.id);
+-        if (runner === undefined) {
++        const runner = this.runtimeHost.getRunner(session.id);
++        if (runner === null) {
+           throw new Error(
+             `no current runner for session ${session.id}; cannot revive subagent '${subagentId}'`,
+           );
+@@ -456,15 +355,16 @@ export class TurnDispatcher {
+    * failed `/project` write.
+    */
+   async getOrCreateRunner(session: ConversationState, surface: Surface): Promise<AgentRunner> {
+-    if (this.internalRunnerIds.has(session.id)) {
++    this.runtimeHost.assertAdmissionOpen();
++    if (this.runtimeHost.isInternalRuntime(session.id)) {
+       throw new Error(`conversation ${session.id} is reserved by an internal runtime`);
+     }
+     const expectedSurfaceId = surfaceId(surface);
+     const skillPolicy = this.surfaceSettings.getSkillPolicy(surface);
+     const expectedPolicyFingerprint = skillPolicyFingerprint(skillPolicy);
+-    const existing = this.runners.get(session.id);
+-    const existingSurfaceId = this.runnerSurfaceIds.get(session.id);
+-    const existingSkillContext = this.runnerSkillContexts.get(session.id);
++    const existing = this.runtimeHost.getRunner(session.id);
++    const existingSurfaceId = this.runtimeHost.surfaceIdFor(session.id);
++    const existingSkillContext = this.runtimeHost.skillContextFor(session.id);
+     if (
+       existing &&
+       existingSurfaceId === expectedSurfaceId &&
+@@ -472,9 +372,9 @@ export class TurnDispatcher {
+     ) {
+       await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
+       if (
+-        this.runners.get(session.id) === existing &&
+-        this.runnerSurfaceIds.get(session.id) === expectedSurfaceId &&
+-        this.runnerSkillContexts.get(session.id)?.policyFingerprint === expectedPolicyFingerprint
++        this.runtimeHost.isRegisteredRunner(session.id, existing) &&
++        this.runtimeHost.surfaceIdFor(session.id) === expectedSurfaceId &&
++        this.runtimeHost.skillContextFor(session.id)?.policyFingerprint === expectedPolicyFingerprint
+       ) {
+         log.debug("reusing runner", {
+           sessionId: session.id,
+@@ -492,7 +392,7 @@ export class TurnDispatcher {
+     // authority check is reconciling pending state.
+     // A different-surface request overwrites the entry, causing the prior
+     // creation's recheck to fail.
+-    const inFlight = this.inFlightCreations.get(session.id);
++    const inFlight = this.runtimeHost.creationFor(session.id);
+     if (
+       inFlight &&
+       inFlight.surfaceId === expectedSurfaceId &&
+@@ -501,17 +401,12 @@ export class TurnDispatcher {
+       return inFlight.promise;
+     }
+ 
+-    let resolveCreation!: (runner: AgentRunner) => void;
+-    let rejectCreation!: (err: unknown) => void;
+-    const creationPromise = new Promise<AgentRunner>((resolve, reject) => {
+-      resolveCreation = resolve;
+-      rejectCreation = reject;
+-    });
+-    this.inFlightCreations.set(session.id, {
+-      promise: creationPromise,
+-      surfaceId: expectedSurfaceId,
+-      policyFingerprint: expectedPolicyFingerprint,
+-    });
++    const creation = this.runtimeHost.reserveCreation(
++      session.id,
++      expectedSurfaceId,
++      expectedPolicyFingerprint,
++    );
++    const creationPromise = creation.promise;
+ 
+     this.doCreateAndRegisterRunner(
+       session,
+@@ -521,12 +416,9 @@ export class TurnDispatcher {
+       skillPolicy,
+       creationPromise,
+     )
+-      .then(resolveCreation, rejectCreation)
++      .then(creation.resolve, creation.reject)
+       .finally(() => {
+-        const current = this.inFlightCreations.get(session.id);
+-        if (current?.promise === creationPromise) {
+-          this.inFlightCreations.delete(session.id);
+-        }
++        this.runtimeHost.finishCreation(session.id, creationPromise, creation);
+       });
+ 
+     return creationPromise;
+@@ -546,7 +438,7 @@ export class TurnDispatcher {
+     creationPromise: Promise<AgentRunner>,
+   ): Promise<AgentRunner> {
+     await this.surfaceRuntimeAuthority.assertCurrentBinding(surface, session.id);
+-    if (this.inFlightCreations.get(session.id)?.promise !== creationPromise) {
++    if (!this.runtimeHost.isCurrentCreation(session.id, creationPromise)) {
+       throw new Error(`stale runtime creation for session ${session.id}: invalidated before capture`);
+     }
+ 
+@@ -590,7 +482,7 @@ export class TurnDispatcher {
+     // this creation while it is suspended, so repeat the synchronous identity
+     // checks before disposing any existing runner. A second check immediately
+     // before registration closes the later resurrection window.
+-    if (this.inFlightCreations.get(session.id)?.promise !== creationPromise) {
++    if (!this.runtimeHost.isCurrentCreation(session.id, creationPromise)) {
+       throw new Error(
+         `stale runtime creation for session ${session.id}: invalidated before registration`,
+       );
+@@ -604,9 +496,14 @@ export class TurnDispatcher {
+     // Dispose existing runner through the single cleanup seam only after
+     // candidate skill resolution succeeds. The `preserveInFlight` parameter
+     // keeps THIS creation alive while old runner identity is removed.
+-    if (this.runners.has(session.id)) {
++    if (this.runtimeHost.hasRunner(session.id)) {
+       await this.disposeRunner(session.id, creationPromise);
+     }
++    // An external lifecycle disposal may have already removed the prior
++    // runner while its cleanup is still draining. A replacement generation
++    // must not commit until that cleanup settles, otherwise a later disposal
++    // could dedup against the stale promise and let the replacement escape.
++    await this.runtimeHost.awaitSettled(session.id);
+ 
+     let memoryContext: CapturedMemoryContext;
+     try {
+@@ -625,11 +522,10 @@ export class TurnDispatcher {
+       throw new Error("runtime capture failed");
+     }
+ 
+-    // Recheck 1 — in-flight identity: if the in-flight entry no longer holds
++    // Recheck 1 — in-flight identity: if the runtime host no longer holds
+     // this creation's promise, a disposal or newer (different-surface)
+     // creation invalidated it.
+-    const currentInFlight = this.inFlightCreations.get(session.id);
+-    if (currentInFlight?.promise !== creationPromise) {
++    if (!this.runtimeHost.isCurrentCreation(session.id, creationPromise)) {
+       throw new Error(
+         `stale runtime creation for session ${session.id}: invalidated during capture`,
+       );
+@@ -650,7 +546,7 @@ export class TurnDispatcher {
+     // The final authority check is async. Recheck identity and policy in the
+     // same synchronous turn immediately before registration so an invalidation
+     // cannot be followed by resurrection of this old runtime.
+-    if (this.inFlightCreations.get(session.id)?.promise !== creationPromise) {
++    if (!this.runtimeHost.isCurrentCreation(session.id, creationPromise)) {
+       throw new Error(
+         `stale runtime creation for session ${session.id}: invalidated before registration`,
+       );
+@@ -670,21 +566,22 @@ export class TurnDispatcher {
+       resolvedSkills,
+       runtimeId,
+     );
+-    this.runners.set(session.id, runner);
+-    this.runnerSurfaceIds.set(session.id, expectedSurfaceId);
+-    this.runnerRuntimeIds.set(session.id, runtimeId);
+-    this.runnerSkillContexts.set(session.id, {
+-      policyFingerprint: expectedPolicyFingerprint,
+-      manifestFingerprint: resolvedSkills?.fingerprint ?? null,
++    this.runtimeHost.registerSurfaceRuntime(session.id, runner, {
++      surfaceId: expectedSurfaceId,
++      runtimeId,
++      skillContext: {
++        policyFingerprint: expectedPolicyFingerprint,
++        manifestFingerprint: resolvedSkills?.fingerprint ?? null,
++      },
+     });
+     log.debug("created runner for session", { sessionId: session.id, surfaceId: expectedSurfaceId });
+     return runner;
+   }
+ 
+   private isRunnerCurrent(conversationId: string, runner: AgentRunner): boolean {
+-    if (this.runners.get(conversationId) !== runner) return false;
+-    if (this.internalRunnerIds.has(conversationId)) return true;
+-    const sid = this.runnerSurfaceIds.get(conversationId);
++    if (!this.runtimeHost.isRegisteredRunner(conversationId, runner)) return false;
++    if (this.runtimeHost.isInternalRuntime(conversationId)) return true;
++    const sid = this.runtimeHost.surfaceIdFor(conversationId);
+     if (sid === undefined) return false;
+     try {
+       return this.surfaceRuntimeAuthority.isCurrentBinding(parseSurfaceId(sid), conversationId);
+@@ -761,28 +658,7 @@ export class TurnDispatcher {
+     onError: (err: unknown) => Promise<void> | void,
+     opts: { isPrompt?: boolean } = {},
+   ): void {
+-    const execute = async (): Promise<void> => {
+-      if (!isCurrent()) return;
+-      try {
+-        await run(isCurrent);
+-      } catch (err) {
+-        if (!isCurrent()) return;
+-        try {
+-          await onError(err);
+-        } catch (handlerErr) {
+-          log.error("prompt error handler failed", { error: String(handlerErr), sessionId });
+-        }
+-      }
+-    };
+-    const prior = this.promptQueues.get(sessionId);
+-    const current = prior ? prior.then(execute, execute) : execute();
+-    const meta: PromptQueueEntry = { isPrompt: opts.isPrompt ?? true };
+-    this.promptQueues.set(sessionId, current);
+-    this.promptQueueMeta.set(sessionId, meta);
+-    void current.finally(() => {
+-      if (this.promptQueues.get(sessionId) === current) this.promptQueues.delete(sessionId);
+-      if (this.promptQueueMeta.get(sessionId) === meta) this.promptQueueMeta.delete(sessionId);
+-    });
++    this.runtimeHost.schedule(sessionId, isCurrent, run, onError, opts);
+   }
+ 
+   /**
+@@ -791,8 +667,7 @@ export class TurnDispatcher {
+    * a command is already pending, so they serialize after it.
+    */
+   isCommandPending(sessionId: string): boolean {
+-    const meta = this.promptQueueMeta.get(sessionId);
+-    return meta !== undefined && !meta.isPrompt;
++    return this.runtimeHost.isCommandPending(sessionId);
+   }
+ 
+   /**
+@@ -803,8 +678,7 @@ export class TurnDispatcher {
+    * actually called.
+    */
+   isPromptPending(sessionId: string): boolean {
+-    const meta = this.promptQueueMeta.get(sessionId);
+-    return meta !== undefined && meta.isPrompt;
++    return this.runtimeHost.isPromptPending(sessionId);
+   }
+ 
+   /**
+@@ -820,13 +694,7 @@ export class TurnDispatcher {
+    * its subagents may continue doing useful work.
+    */
+   async cancelPending(sessionId: string): Promise<boolean> {
+-    const meta = this.promptQueueMeta.get(sessionId);
+-    if (!meta || !meta.isPrompt) return false;
+-    const runner = this.getRunner(sessionId);
+-    if (runner && !runner.isStreaming) {
+-      await runner.abort();
+-    }
+-    return true;
++    return this.runtimeHost.cancelPending(sessionId);
+   }
+ 
+   /**
+@@ -834,9 +702,9 @@ export class TurnDispatcher {
+    * work for the stale runner aborts via the `isCurrent()` guard. Safe to call
+    * when no runner exists (no-op).
+    *
+-   * Disposes the runner and clears the queue first, then invalidates attached
+-   * delegated work through DelegatedWorkHost. External-agent cleanup remains
+-   * on its legacy host-specific adapter until that host joins this boundary.
++   * Delegates the complete runtime cleanup boundary to
++   * `ConversationRuntimeHost`: it fences the registration and queue first,
++   * then disposes the runner and awaits delegated/external cleanup.
+    *
+    * @param preserveInFlight When called from `doCreateAndRegisterRunner` to
+    *   dispose an old runner before creating a replacement, pass the new
+@@ -849,97 +717,10 @@ export class TurnDispatcher {
+     preserveInFlight?: Promise<AgentRunner>,
+     options?: RuntimeDisposalOptions,
+   ): Promise<void> {
+-    const prior = this.runners.get(sessionId);
+-    const runtimeId = this.runnerRuntimeIds.get(sessionId);
+-    this.runners.delete(sessionId);
+-    this.runnerSurfaceIds.delete(sessionId);
+-    this.runnerRuntimeIds.delete(sessionId);
+-    this.runnerSkillContexts.delete(sessionId);
+-    this.internalRunnerIds.delete(sessionId);
+-    // Clear the in-flight creation entry unless it matches the creation to
+-    // preserve (a replacement disposal). This is the stale-runner guard: a
+-    // capture in flight when the runner is disposed fails its post-capture
+-    // recheck and is discarded rather than registered.
+-    const currentInFlight = this.inFlightCreations.get(sessionId);
+-    if (!preserveInFlight || currentInFlight?.promise !== preserveInFlight) {
+-      this.inFlightCreations.delete(sessionId);
+-    }
+-    const pendingQueue = this.promptQueueMeta.get(sessionId);
+-    const preserveCommandQueue = options?.preserveCommandQueue === true && pendingQueue?.isPrompt === false;
+-    if (!preserveCommandQueue) {
+-      this.promptQueues.delete(sessionId);
+-      this.promptQueueMeta.delete(sessionId);
+-    }
+-
+-    // Fence delegated work immediately after runtime identity is removed.
+-    // `invalidateRuntime` performs its fence synchronously before returning a
+-    // promise, so no late generic spawn can cross this boundary.
+-    let delegatedErr: unknown;
+-    let delegatedFailed = false;
+-    const delegatedInvalidation: Promise<void> = runtimeId === undefined
+-      ? Promise.resolve()
+-      : this.delegatedWorkHost
+-        .invalidateRuntime(runtimeId)
+-        .catch((err: unknown) => {
+-          delegatedErr = err;
+-          delegatedFailed = true;
+-          log.error("delegated work invalidation failed in disposeRunner", {
+-            sessionId,
+-            runtimeId: runtimeId ?? null,
+-            err: err instanceof Error ? err.message : String(err),
+-          });
+-        });
+-
+-    // Await runner disposal and subagent/external cleanup, but track failure so
+-    // falsy throws (e.g. `throw undefined` or `throw null`) are still rethrown.
+-    let disposeErr: unknown;
+-    let disposeFailed = false;
+-    if (prior) {
+-      try {
+-        await prior.dispose();
+-      } catch (err) {
+-        disposeErr = err;
+-        disposeFailed = true;
+-        log.error("AgentRunner.dispose failed in disposeRunner", {
+-          sessionId,
+-          err: err instanceof Error ? err.message : String(err),
+-        });
+-      }
+-    }
+-
+-    // External-agent cleanup remains on its legacy adapter path in this
+-    // attached-subagent slice. Generic subagents are never enumerated or
+-    // cancelled here; DelegatedWorkHost owns their runtime invalidation.
+-    await delegatedInvalidation;
+-
+-    // External-agent cancellation still has its legacy bounded adapter. Do not
+-    // use a timeout for delegated attached work: timeout is not proof of
+-    // quiescence.
+-    let timer: ReturnType<typeof setTimeout> | undefined;
+-    const externalCancelPromise = this.externalAgentRunner
+-      ? this.externalAgentRunner.cancelBySession(sessionId).catch((err) => {
+-          log.error("externalAgentRunner.cancelBySession failed in disposeRunner", {
+-            sessionId,
+-            err: err instanceof Error ? err.message : String(err),
+-          });
+-        })
+-      : Promise.resolve();
+-    const timeout = new Promise<void>((resolve) => {
+-      timer = setTimeout(() => {
+-        log.warn("external-agent cancellation timed out in disposeRunner; continuing side effects", { sessionId });
+-        resolve();
+-      }, DISPOSE_RUNNER_CANCEL_TIMEOUT_MS);
++    return this.runtimeHost.disposeRuntime(sessionId, {
++      ...options,
++      preserveInFlight,
+     });
+-    try {
+-      await Promise.race([externalCancelPromise, timeout]);
+-    } finally {
+-      if (timer) clearTimeout(timer);
+-    }
+-    if (disposeFailed && delegatedFailed) {
+-      throw new AggregateError([disposeErr, delegatedErr], "disposeRunner cleanup failed");
+-    }
+-    if (disposeFailed) throw disposeErr;
+-    if (delegatedFailed) throw delegatedErr;
+   }
+ 
+   /**
+@@ -954,9 +735,10 @@ export class TurnDispatcher {
+     onComplete: (text: string) => void,
+     onError: (err: unknown) => void,
+   ): void {
++    this.runtimeHost.assertAdmissionOpen();
+     assertInternalSessionState(session);
+-    let runner = this.runners.get(session.id);
+-    if (runner && !this.internalRunnerIds.has(session.id)) {
++    let runner = this.runtimeHost.getRunner(session.id);
++    if (runner && !this.runtimeHost.isInternalRuntime(session.id)) {
+       throw new Error(`cannot reuse Surface-backed runtime ${session.id} for an internal turn`);
+     }
+     if (!runner) {
+@@ -981,8 +763,7 @@ export class TurnDispatcher {
+         executionEnvironment: session.executionEnvironment,
+       };
+       runner = this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
+-      this.runners.set(session.id, runner);
+-      this.internalRunnerIds.add(session.id);
++      this.runtimeHost.registerInternalRuntime(session.id, runner);
+     }
+ 
+     const captured: string[] = [];
+@@ -998,7 +779,7 @@ export class TurnDispatcher {
+ 
+     this.schedulePromptById(
+       session.id,
+-      () => this.runners.get(session.id) === runner && this.internalRunnerIds.has(session.id),
++      () => this.runtimeHost.isRegisteredRunner(session.id, runner!) && this.runtimeHost.isInternalRuntime(session.id),
+       async () => {
+         await runner.prompt(content, sink);
+         onComplete(captured.join(""));
+@@ -1008,6 +789,15 @@ export class TurnDispatcher {
+     );
+   }
+ 
++  /**
++   * True when the runtime kernel is still accepting new work. The scheduler
++   * reads this before claiming a due occurrence so a shutdown in flight does
++   * not permanently consume a one-shot schedule as though it ran.
++   */
++  runtimeAdmissionOpen(): boolean {
++    return this.runtimeHost.isAdmissionOpen();
++  }
++
+   /**
+    * Enqueue a scheduled prompt as a fresh turn for a session. The scheduler
+    * calls this after binding validation passes. No `TelegramIntakeMessage` is
+@@ -1019,21 +809,29 @@ export class TurnDispatcher {
+    * the stale-runner guard checks it at execution time. If no runner exists at
+    * enqueue time, the callback creates one via the async `getOrCreateRunner`
+    * (memory context capture must complete before registration). This keeps the
+-   * method sync and fire-and-forget — the scheduler does not need to await it.
++   * method fire-and-forget — the scheduler does not await the model turn.
++   *
++   * Returns `true` when the runtime queue admitted the turn and `false` when
++   * runtime admission is closed (shutdown). The scheduler must not record a
++   * successful outcome or consume a one-shot occurrence for rejected work.
+    */
+   enqueueScheduledTurn(
+     session: ConversationState,
+     surface: Surface,
+     content: PromptContent,
+     onError?: (err: unknown) => void,
+-  ): void {
++  ): boolean {
++    if (!this.runtimeHost.isAdmissionOpen()) {
++      log.info("scheduled turn rejected: runtime admission closed", { sessionId: session.id });
++      return false;
++    }
+     const buffer = this.createMessageBuffer(surface, session);
+     // Capture the runner reference at enqueue time if one exists. This is the
+     // stale-runner guard: if the runner is disposed (e.g. by /new) before the
+     // queued scheduled turn starts, the guard aborts the turn without creating
+     // a new runner. If no runner exists at enqueue time, the callback creates
+     // one via getOrCreateRunner (async capture).
+-    const existingRunner = this.runners.get(session.id);
++    const existingRunner = this.runtimeHost.getRunner(session.id);
+ 
+     const execute = async (): Promise<void> => {
+       try {
+@@ -1065,14 +863,18 @@ export class TurnDispatcher {
+ 
+     // Chain onto the per-session prompt queue so scheduled turns serialize
+     // with user turns and deferred commands.
+-    const prior = this.promptQueues.get(session.id);
+-    const current = prior ? prior.then(execute, execute) : execute();
+-    const meta: PromptQueueEntry = { isPrompt: true };
+-    this.promptQueues.set(session.id, current);
+-    this.promptQueueMeta.set(session.id, meta);
+-    void current.finally(() => {
+-      if (this.promptQueues.get(session.id) === current) this.promptQueues.delete(session.id);
+-      if (this.promptQueueMeta.get(session.id) === meta) this.promptQueueMeta.delete(session.id);
+-    });
++    const admitted = this.runtimeHost.schedule(
++      session.id,
++      () => existingRunner === null || this.isRunnerCurrent(session.id, existingRunner),
++      execute,
++      (err) => {
++        onError?.(err);
++      },
++      { isPrompt: true },
++    );
++    if (!admitted) {
++      log.info("scheduled turn rejected at queue admission", { sessionId: session.id });
++    }
++    return admitted;
+   }
+ }
+diff --git a/src/orchestration/mod.ts b/src/orchestration/mod.ts
+new file mode 100644
+index 0000000..7b8b9d4
+--- /dev/null
++++ b/src/orchestration/mod.ts
+@@ -0,0 +1,33 @@
++export {
++  ConversationRuntimeHost,
++  type ConversationRuntimeHostPort,
++  type RuntimeCreation,
++  type RuntimeDisposalOptions,
++  type RuntimeSkillContext,
++  type SurfaceRuntimeRegistration,
++} from "./conversation-runtime-host.ts";
++export {
++  createConversationLifecycle,
++  ConversationLifecycleManager,
++  FileSurfaceSettings,
++  reconcileProjectAssignmentAtColdStart,
++  type ConversationLifecycle,
++  type SurfaceSettings,
++} from "./conversation-lifecycle.ts";
++export {
++  createConversationOrchestration,
++  type ConversationOrchestration,
++  type ConversationOrchestrationOptions,
++} from "./composition.ts";
++export {
++  TurnDispatcher,
++  type PromptContent,
++  type TurnDispatcherOptions,
++  type TurnSink,
++} from "./dispatcher.ts";
++export type {
++  AttachmentSignal,
++  AttachedWork,
++  CurrentBindingGuard,
++  SurfaceRuntimeAuthority,
++} from "./surface-runtime-authority.ts";
+diff --git a/src/orchestration/surface-runtime-authority.ts b/src/orchestration/surface-runtime-authority.ts
+new file mode 100644
+index 0000000..23255f4
+--- /dev/null
++++ b/src/orchestration/surface-runtime-authority.ts
+@@ -0,0 +1,35 @@
++import type { AgentRunner } from "../agent/mod.ts";
++import type { ConversationId } from "../sessions/types.ts";
++import type { Surface } from "../surface.ts";
++
++/** Signal used while attached work acquires its runtime-owned resources. */
++export interface AttachmentSignal {
++  readonly settled: boolean;
++  attached(): void;
++  failed(err: unknown): void;
++}
++
++/** Work returned after the lifecycle guard releases its transition lock. */
++export interface AttachedWork<T> {
++  result: Promise<T>;
++  runner?: AgentRunner;
++}
++
++/** Lifecycle guard that excludes Binding replacement until work is attached. */
++export interface CurrentBindingGuard {
++  withCurrentBinding<T>(
++    surface: Surface,
++    conversationId: ConversationId,
++    fn: (signal: AttachmentSignal) => Promise<AttachedWork<T>>,
++  ): Promise<AttachedWork<T>>;
++}
++
++/**
++ * Lifecycle-owned authority used by every Surface-backed runtime effect.
++ * Asynchronous checks reconcile pending transitions; the synchronous check is
++ * closed over by AgentRunner so stale work fails before producing effects.
++ */
++export interface SurfaceRuntimeAuthority extends CurrentBindingGuard {
++  assertCurrentBinding(surface: Surface, conversationId: ConversationId): Promise<void>;
++  isCurrentBinding(surface: Surface, conversationId: ConversationId): boolean;
++}
+diff --git a/src/scheduler/loop.test.ts b/src/scheduler/loop.test.ts
+index ba2c72b..9bf03d0 100644
+--- a/src/scheduler/loop.test.ts
++++ b/src/scheduler/loop.test.ts
+@@ -21,14 +21,18 @@ import type { SchedulerClock, SchedulerConversationLifecycle, SchedulerDispatche
+ import { dmSurface, surfaceId, type Surface } from "../surface.ts";
+ 
+ /** Fake dispatcher that records every enqueueScheduledTurn call. */
+-function makeFakeDispatcher(): SchedulerDispatcher & {
++function makeFakeDispatcher(admission: { open: boolean } = { open: true }): SchedulerDispatcher & {
+   calls: { conversation: ConversationState; surface: Surface; content: string }[];
++  setAdmissionOpen(open: boolean): void;
+ } {
+   const calls: { conversation: ConversationState; surface: Surface; content: string }[] = [];
+   return {
+     calls,
++    runtimeAdmissionOpen: () => admission.open,
++    setAdmissionOpen: (open) => { admission.open = open; },
+     enqueueScheduledTurn(conversation, surface, content) {
+       calls.push({ conversation, surface, content });
++      return true;
+     },
+   };
+ }
+@@ -206,6 +210,48 @@ describe("SchedulerLoop", () => {
+   });
+ 
+   describe("overlapping ticks", () => {
++    it("does not claim a one-shot when shutdown closes runtime admission during an in-flight tick", async () => {
++      const loc: Surface = dmSurface(100);
++      const conversation = await createSession(loc);
++      const created = store.create({
++        surface: loc,
++        kind: "once",
++        prompt: "must survive shutdown",
++        nextRunAt: new Date(NOW_MS - 1000).toISOString(),
++      });
++
++      let releaseResolution!: (conversation: ConversationState | null) => void;
++      const resolution = new Promise<ConversationState | null>((resolve) => {
++        releaseResolution = resolve;
++      });
++      const inFlightLifecycle: SchedulerConversationLifecycle = {
++        resolveCurrent: () => resolution,
++      };
++      const loop = new SchedulerLoop({
++        store,
++        ...schedulerDependencies(inFlightLifecycle),
++        dispatcher,
++        clock: clock.clock,
++        home: tmpDir,
++      });
++
++      loop.start();
++      const tick = loop.tick();
++      loop.stop();
++      // Runtime admission is deliberately still open: SchedulerLoop.stop()
++      // itself must fence a tick that was already resolving the binding.
++      expect(dispatcher.runtimeAdmissionOpen()).toBe(true);
++      releaseResolution(conversation);
++      await tick;
++
++      expect(dispatcher.calls).toHaveLength(0);
++      const after = store.getForSurface(loc, created.id);
++      expect(after!.enabled).toBe(true);
++      expect(after!.state).toBe("enabled");
++      expect(after!.nextRunAt).toBe(created.nextRunAt);
++      expect(after!.lastRun).toBeUndefined();
++    });
++
+     it("does not double-dispatch the same due occurrence", async () => {
+       const loc: Surface = dmSurface(100);
+       await createSession(loc);
+@@ -518,6 +564,7 @@ describe("SchedulerLoop", () => {
+ 
+       // Force a throw from the dispatcher on the first dispatch.
+       const throwingDispatcher: SchedulerDispatcher = {
++        runtimeAdmissionOpen: () => true,
+         enqueueScheduledTurn: () => {
+           throw new Error("boom");
+         },
+@@ -559,6 +606,7 @@ describe("SchedulerLoop", () => {
+       });
+ 
+       const throwingDispatcher: SchedulerDispatcher = {
++        runtimeAdmissionOpen: () => true,
+         enqueueScheduledTurn: () => {
+           throw new Error("sync boom");
+         },
+@@ -888,12 +936,14 @@ describe("SchedulerLoop", () => {
+       // still run. This makes the test robust to listDue ordering.
+       let firstSeen = false;
+       const mixedDispatcher: SchedulerDispatcher = {
++        runtimeAdmissionOpen: () => true,
+         enqueueScheduledTurn(conversation, surface, content) {
+           if (!firstSeen) {
+             firstSeen = true;
+             throw new Error("boom on first");
+           }
+           dispatcher.enqueueScheduledTurn(conversation, surface, content);
++          return true;
+         },
+       };
+       const loop = new SchedulerLoop({
+diff --git a/src/scheduler/loop.ts b/src/scheduler/loop.ts
+index 0f215da..3da5736 100644
+--- a/src/scheduler/loop.ts
++++ b/src/scheduler/loop.ts
+@@ -138,12 +138,18 @@ const realClock: SchedulerClock = {
+  * slice of `TurnDispatcher` the loop needs.
+  */
+ export interface SchedulerDispatcher {
++  /**
++   * True when the runtime kernel is still accepting work. The scheduler reads
++   * this before claiming a due occurrence so a shutdown in flight cannot
++   * permanently consume a one-shot schedule as though it ran.
++   */
++  runtimeAdmissionOpen(): boolean;
+   enqueueScheduledTurn(
+     conversation: ConversationState,
+     surface: Surface,
+     content: string,
+     onError?: (err: unknown) => void,
+-  ): void;
++  ): boolean;
+   enqueueInternalTurn?(
+     internalSession: InternalSessionState,
+     content: string,
+@@ -218,6 +224,9 @@ export class SchedulerLoop {
+   private timer: { clear(): void } | null = null;
+   private memoryTimers: { clear(): void }[] = [];
+   private ticking = false;
++  /** Scheduler-owned claim fence. Unlike timer state, this remains closed even
++   * when stop() races a tick that is already awaiting binding resolution. */
++  private claimsOpen = true;
+ 
+   constructor(options: SchedulerOptions) {
+     this.store = options.store;
+@@ -238,6 +247,7 @@ export class SchedulerLoop {
+   /** Begin ticking. No-op if already started. */
+   start(): void {
+     if (this.timer) return;
++    this.claimsOpen = true;
+     this.timer = this.clock.setInterval(() => {
+       void this.tick();
+     }, this.tickIntervalMs);
+@@ -247,6 +257,7 @@ export class SchedulerLoop {
+ 
+   /** Stop ticking. No-op if not started. Safe to call during shutdown. */
+   stop(): void {
++    this.claimsOpen = false;
+     if (this.timer) {
+       this.timer.clear();
+       this.timer = null;
+@@ -620,6 +631,23 @@ ${formatted}`;
+     // Claim before dispatch. For one-shot this completes/disables; for
+     // recurring this advances nextRunAt. If another tick already claimed it,
+     // claimDue returns null and we skip.
++    //
++    // Scheduler and runtime admission gates: if shutdown has begun, do NOT
++    // claim — claiming would consume a one-shot occurrence as though it ran.
++    // The scheduler-owned fence is closed synchronously by stop(), including
++    // for a tick already awaiting resolveCurrent(). There is
++    // no await between this check and the dispatch below, so once admission is
++    // open here the enqueue cannot be rejected by a later close in the same
++    // synchronous sequence. The occurrence stays due (enabled) using existing
++    // scheduler semantics; on a normal shutdown the loop is stopping, so this
++    // is the narrow interrupted case rather than a new outcome type.
++    if (!this.claimsOpen || !this.dispatcher.runtimeAdmissionOpen()) {
++      log.info("scheduler skipped due schedule: admission closed", {
++        id: schedule.id,
++        surfaceId: surfaceId(schedule.surface),
++      });
++      return;
++    }
+     const claimed = this.store.claimDue(schedule.id, nowIso);
+     if (!claimed) return;
+ 
+@@ -639,7 +667,7 @@ ${formatted}`;
+     try {
+       const isHeartbeat = schedule.kind === "heartbeat";
+       const prompt = isHeartbeat ? resolveHeartbeatPrompt(this.home, schedule.surface) : schedule.prompt ?? "";
+-      this.dispatcher.enqueueScheduledTurn(conversation, schedule.surface, prompt, (err) => {
++      const admitted = this.dispatcher.enqueueScheduledTurn(conversation, schedule.surface, prompt, (err) => {
+         const msg = err instanceof Error ? err.message : String(err);
+         this.store.recordRun(schedule.id, {
+           at: new Date(this.clock.now()).toISOString(),
+@@ -647,6 +675,15 @@ ${formatted}`;
+           message: msg,
+         });
+       });
++      if (!admitted) {
++        // Runtime admission closed between the gate above and enqueue. There
++        // is no await in that span, so this is unreachable in practice; defend
++        // anyway by NOT recording a successful outcome for rejected work.
++        log.error("scheduler dispatch rejected at runtime boundary after claim", {
++          id: schedule.id,
++        });
++        return;
++      }
+     } catch (err) {
+       const msg = err instanceof Error ? err.message : String(err);
+       this.store.recordRun(schedule.id, { at: nowIso, outcome: "error", message: msg });
+diff --git a/src/subagents/test/runtime-authority.suite.ts b/src/subagents/test/runtime-authority.suite.ts
+index 5f5e62f..7eed688 100644
+--- a/src/subagents/test/runtime-authority.suite.ts
++++ b/src/subagents/test/runtime-authority.suite.ts
+@@ -7,7 +7,7 @@ import type { ActiveScope, CapturedMemoryContext, InternalMemoryContext } from "
+ import { MemoryStore } from "../../memory/mod.ts";
+ import { activeMemoryScopeFor } from "../../memory/scope.ts";
+ import { createConversationLifecycle, type ConversationLifecycle } from "../../orchestration/conversation-lifecycle.ts";
+-import { createTurnDispatcherRuntimeHost } from "../../orchestration/conversation-runtime-host.ts";
++import { ConversationRuntimeHost } from "../../orchestration/conversation-runtime-host.ts";
+ import { TurnDispatcher, type TurnSink } from "../../orchestration/dispatcher.ts";
+ import { personalEnvironment } from "../../sessions/environment.ts";
+ import { DEFAULT_SKILL_POLICY } from "../../agent/skills/mod.ts";
+@@ -173,17 +173,15 @@ function createFixture(): RuntimeFixture {
+     ),
+   ], undefined, subagentHost);
+ 
+-  let dispatcher: TurnDispatcher | undefined;
+-  const lifecycle = createConversationLifecycle(home, createTurnDispatcherRuntimeHost(() => {
+-    if (dispatcher === undefined) throw new Error("runtime host used before dispatcher construction");
+-    return dispatcher;
+-  }), surfaceSettings);
+-  dispatcher = new TurnDispatcher({
++  const runtimeHost = new ConversationRuntimeHost({
++    delegatedWorkHost: subagentRunner.delegatedWorkHost,
++  });
++  const lifecycle = createConversationLifecycle(home, runtimeHost, surfaceSettings);
++  const dispatcher = new TurnDispatcher({
+     cfg,
+     surfaceSettings,
+     subagentRunner,
+     memoryStore,
+-    agentRunners: new Map(),
+     createMessageBuffer: (): TurnSink => ({
+       onTextDelta: () => {},
+       onToolStart: () => {},
+@@ -195,6 +193,7 @@ function createFixture(): RuntimeFixture {
+     }),
+     createBetaTools: () => [],
+     createAgentRunner: (opts) => makeFakeAgentRunner(opts),
++    runtimeHost,
+     surfaceRuntimeAuthority: lifecycle,
+   });
+ 
+diff --git a/src/tg/coalesce.test.ts b/src/tg/coalesce.test.ts
+index 3fd19d4..a1c79af 100644
+--- a/src/tg/coalesce.test.ts
++++ b/src/tg/coalesce.test.ts
+@@ -15,6 +15,12 @@ import type { TelegramIntakeMessage } from "./intake.ts";
+ 
+ // --- helpers ---------------------------------------------------------------
+ 
++function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
++  let resolve!: (value: T) => void;
++  const promise = new Promise<T>((res) => { resolve = res; });
++  return { promise, resolve };
++}
++
+ /** A minimal fake `TelegramIntakeMessage` carrying an id so tests can assert
+  * which fragment's message was passed on flush (D9). */
+ function makeMessage(id: number): TelegramIntakeMessage {
+@@ -272,6 +278,84 @@ describe("TextCoalescer — commands", () => {
+     expect(dispatch).toHaveBeenCalledTimes(1);
+     expect(dispatchedText(dispatch, 0)).toBe("/new");
+   });
++
++  it("delivers buffered text exactly once and rejects new text after close", async () => {
++    const { coalescer, dispatch } = makeCoalescer();
++    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
++
++    await coalescer.close();
++    coalescer.submit(makeInput("late", { messageIdFor: 2, messageId: 2 }));
++    vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS * 2);
++
++    // Buffered text was flushed exactly once; text submitted after close is dropped.
++    expect(dispatch).toHaveBeenCalledTimes(1);
++    expect(dispatchedText(dispatch, 0)).toBe(textOf(TEXT_SPLIT_THRESHOLD));
++  });
++
++  it("flushes multiple buffered fragments as one merged dispatch on close", async () => {
++    const { coalescer, dispatch } = makeCoalescer();
++    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
++    coalescer.submit(makeInput(textOf(5, "y"), { messageIdFor: 2, messageId: 2 }));
++
++    await coalescer.close();
++
++    expect(dispatch).toHaveBeenCalledTimes(1);
++    expect(dispatchedText(dispatch, 0)).toBe(textOf(TEXT_SPLIT_THRESHOLD) + textOf(5, "y"));
++  });
++
++  it("does not replay a returned immediate-dispatch failure during later close", async () => {
++    const error = new Error("handled by grammy");
++    const dispatch = mock<CoalesceDispatch>(() => Promise.reject(error));
++    const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
++
++    const returned = coalescer.submit(makeInput("short", { messageIdFor: 1, messageId: 1 }));
++    await expect(returned!).rejects.toBe(error);
++    await expect(coalescer.close()).resolves.toBeUndefined();
++  });
++
++  it("surfaces dispatch failures during close without swallowing them", async () => {
++    const error = new Error("boom");
++    const dispatch = mock<CoalesceDispatch>(() => Promise.reject(error));
++    const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
++    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
++
++    await expect(coalescer.close()).rejects.toBe(error);
++    expect(dispatch).toHaveBeenCalledTimes(1);
++  });
++
++  it("retains a detached rejection even when its reason is undefined", async () => {
++    const dispatch = mock<CoalesceDispatch>(() => Promise.reject(undefined));
++    const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
++    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
++
++    let rejected = false;
++    try {
++      await coalescer.close();
++    } catch (reason) {
++      rejected = true;
++      expect(reason).toBeUndefined();
++    }
++    expect(rejected).toBe(true);
++  });
++
++  it("awaits a timer-flushed dispatch and shares one close promise", async () => {
++    const pending = deferred<void>();
++    const dispatch = mock<CoalesceDispatch>(() => pending.promise);
++    const coalescer = new TextCoalescer({ dispatch: dispatch as unknown as CoalesceDispatch });
++    coalescer.submit(makeInput(textOf(TEXT_SPLIT_THRESHOLD), { messageIdFor: 1, messageId: 1 }));
++    vi.advanceTimersByTime(TEXT_SPLIT_WINDOW_MS);
++
++    const firstClose = coalescer.close();
++    expect(coalescer.close()).toBe(firstClose);
++    let closed = false;
++    void firstClose.then(() => { closed = true; });
++    await Promise.resolve();
++    expect(closed).toBe(false);
++
++    pending.resolve(undefined);
++    await firstClose;
++    expect(closed).toBe(true);
++  });
+ });
+ 
+ describe("TextCoalescer — key isolation", () => {
+diff --git a/src/tg/coalesce.ts b/src/tg/coalesce.ts
+index 0ee2c5b..382fb4a 100644
+--- a/src/tg/coalesce.ts
++++ b/src/tg/coalesce.ts
+@@ -7,6 +7,7 @@
+  * adjacent Telegram `message_id`s, trailing-debounced. Historical rationale:
+  * `specs/changes/archive/2026-07-09-telegram-text-coalescing/`.
+  */
++import { log } from "../log.ts";
+ import type { TelegramIntakeMessage } from "./intake.ts";
+ 
+ /** A fragment at or above this length is treated as a likely split first half. */
+@@ -83,18 +84,57 @@ export interface TextCoalescerOptions {
+ export class TextCoalescer {
+   private readonly dispatch: CoalesceDispatch;
+   private readonly buffers = new Map<string, BufferEntry>();
++  private readonly activeDispatches = new Set<Promise<void>>();
++  private readonly dispatchFailures: unknown[] = [];
++  private closed = false;
++  private closePromise: Promise<void> | undefined;
+ 
+   constructor(options: TextCoalescerOptions) {
+     this.dispatch = options.dispatch;
+   }
+ 
++  /** Observe every admitted dispatch so close can drain it. Only detached
++   * dispatches retain failures for close; returned promises belong to callers. */
++  private dispatchTracked(
++    message: TelegramIntakeMessage,
++    text: string,
++    detached: boolean,
++  ): Promise<void> {
++    let dispatch: Promise<void>;
++    try {
++      dispatch = this.dispatch(message, text);
++    } catch (error) {
++      dispatch = Promise.reject(error);
++    }
++    this.activeDispatches.add(dispatch);
++    const settleSuccess = (): void => {
++      this.activeDispatches.delete(dispatch);
++    };
++    const settleFailure = (error: unknown): void => {
++      this.activeDispatches.delete(dispatch);
++      if (!detached) return;
++      // Rejection is an outcome independent of its reason: Promise.reject()
++      // is still a failure even though the reason is undefined.
++      this.dispatchFailures.push(error);
++      log.error("detached coalescer dispatch failed", {
++        error: error instanceof Error ? error.message : String(error),
++      });
++    };
++    void dispatch.then(settleSuccess, settleFailure);
++    return dispatch;
++  }
++
+   submit(input: CoalesceInput): Promise<void> | undefined {
++    if (this.closed) {
++      log.info("telegram text dropped after admission closed", { surfaceId: input.key.surfaceId });
++      return;
++    }
+     // Commands never buffer. If a buffer is open for the key, flush it first
+     // (buffered text reaches intake before the command), then dispatch the
+     // command immediately.
+     if (input.isCommand) {
+       this.flush(input.key);
+-      return this.dispatch(input.message, input.text);
++      return this.dispatchTracked(input.message, input.text, false);
+     }
+ 
+     const entry = this.buffers.get(keyToString(input.key));
+@@ -105,7 +145,7 @@ export class TextCoalescer {
+       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
+         this.open(input);
+       } else {
+-        return this.dispatch(input.message, input.text);
++        return this.dispatchTracked(input.message, input.text, false);
+       }
+       return;
+     }
+@@ -129,7 +169,7 @@ export class TextCoalescer {
+       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
+         this.open(input);
+       } else {
+-        return this.dispatch(input.message, input.text);
++        return this.dispatchTracked(input.message, input.text, false);
+       }
+       return;
+     }
+@@ -145,7 +185,7 @@ export class TextCoalescer {
+       if (input.text.length >= TEXT_SPLIT_THRESHOLD) {
+         this.open(input);
+       } else {
+-        return this.dispatch(input.message, input.text);
++        return this.dispatchTracked(input.message, input.text, false);
+       }
+       return;
+     }
+@@ -178,6 +218,39 @@ export class TextCoalescer {
+     this.buffers.set(key, entry);
+   }
+ 
++  /**
++   * Stop accepting Telegram text and deliver the fragments already accepted
++   * into coalescing buffers exactly once. New submissions after close are
++   * rejected; buffered fragments are flushed and their dispatches awaited so
++   * shutdown never silently drops user text that was already admitted.
++   * Dispatch failures are logged, not swallowed.
++   */
++  close(): Promise<void> {
++    if (this.closePromise) return this.closePromise;
++    this.closed = true;
++    this.closePromise = this.closeOnce();
++    return this.closePromise;
++  }
++
++  private async closeOnce(): Promise<void> {
++    const entries = [...this.buffers.values()];
++    for (const entry of entries) clearTimeout(entry.timer);
++    this.buffers.clear();
++    for (const entry of entries) void this.dispatchTracked(entry.message, entry.text, true);
++
++    while (this.activeDispatches.size > 0) {
++      await Promise.allSettled([...this.activeDispatches]);
++    }
++
++    const failures = this.dispatchFailures.splice(0);
++    log.info("telegram text admission closed", {
++      bufferedFragments: entries.length,
++      dispatchFailures: failures.length,
++    });
++    if (failures.length === 1) throw failures[0];
++    if (failures.length > 1) throw new AggregateError(failures, "Telegram text dispatch failed");
++  }
++
+   /** Flush an open buffer for `key`: concatenate buffered fragments with no
+    * separator, dispatch using the retained first-fragment message, clear the
+    * timer, and delete the entry. No-op when no buffer is open. */
+@@ -187,7 +260,7 @@ export class TextCoalescer {
+     if (entry === undefined) return;
+     clearTimeout(entry.timer);
+     this.buffers.delete(k);
+-    this.dispatch(entry.message, entry.text);
++    void this.dispatchTracked(entry.message, entry.text, true);
+   }
+ }
+ 
+diff --git a/src/tg/intake.test.ts b/src/tg/intake.test.ts
+index 9f92b9d..7902913 100644
+--- a/src/tg/intake.test.ts
++++ b/src/tg/intake.test.ts
+@@ -9,6 +9,7 @@ import type { AgentRunner } from "../agent/mod.ts";
+ import { log } from "../log.ts";
+ import { MemoryStore } from "../memory/mod.ts";
+ import { ConversationStore } from "../sessions/conversation-store.ts";
++import type { ConversationState } from "../sessions/types.ts";
+ import { InternalSessionStore } from "../sessions/internal-session-store.ts";
+ import { personalEnvironment } from "../sessions/environment.ts";
+ import { dmSurface, guestSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
+@@ -16,6 +17,11 @@ import { metricsPath, transcriptPath } from "../sessions/paths.ts";
+ import { SubagentRunner } from "../subagents/mod.ts";
+ import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
+ import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
++import { createConversationOrchestration } from "../orchestration/composition.ts";
++import type { EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
++import type { ExternalAgentRunner } from "../external-agents/mod.ts";
++import { DelegatedWorkHost } from "../delegated-work/mod.ts";
++import type { TurnSink } from "../orchestration/dispatcher.ts";
+ import { SchedulerLoop, type SchedulerClock } from "../scheduler/loop.ts";
+ import { ScheduleStore } from "../scheduler/store.ts";
+ import {
+@@ -26,6 +32,7 @@ import {
+   type TelegramIntakeMessage,
+ } from "./intake.ts";
+ import type { MessageBuffer } from "./mod.ts";
++import { createTelegramRuntimeAdapters } from "./runtime-adapters.ts";
+ import type { GuestReplySink } from "./guest-sink.ts";
+ import type { InlineQueryResult } from "@grammyjs/types";
+ 
+@@ -116,10 +123,60 @@ function makeGuestMessage(chatId = 99): {
+   return { message, results, rejectNext: (err) => { pendingReject = err; } };
+ }
+ 
++interface TestIntakeOptions {
++  cfg: Config;
++  bot: Bot;
++  subagentRunner: SubagentRunner;
++  memoryStore: MemoryStore;
++  createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
++  embeddingProvider?: EmbeddingProvider;
++  dreamingPipeline?: DreamingPipeline;
++  createMessageBuffer?: (surface: Surface, conversation?: ConversationState) => TurnSink;
++  scheduleStore?: ScheduleStore;
++  externalAgentRunner?: ExternalAgentRunner;
++  delegatedWorkHost?: DelegatedWorkHost;
++}
++
++type TestIntake = ReturnType<typeof createTelegramIntake> & {
++  readonly runtimeHost: ReturnType<typeof createConversationOrchestration>["runtimeHost"];
++};
++
++function createTestIntake(options: TestIntakeOptions): TestIntake {
++  const adapters = createTelegramRuntimeAdapters({
++    cfg: options.cfg,
++    bot: options.bot,
++    memoryStore: options.memoryStore,
++    createMessageBuffer: options.createMessageBuffer,
++  });
++  const orchestration = createConversationOrchestration({
++    cfg: options.cfg,
++    subagentRunner: options.subagentRunner,
++    memoryStore: options.memoryStore,
++    createAgentRunner: options.createAgentRunner,
++    embeddingProvider: options.embeddingProvider,
++    dreamingPipeline: options.dreamingPipeline,
++    createMessageBuffer: adapters.createMessageBuffer,
++    createBetaTools: adapters.createBetaTools,
++    scheduleStore: options.scheduleStore,
++    externalAgentRunner: options.externalAgentRunner,
++  });
++  const intake = createTelegramIntake({
++    cfg: options.cfg,
++    bot: options.bot,
++    subagentRunner: options.subagentRunner,
++    memoryStore: options.memoryStore,
++    dispatcher: orchestration.dispatcher,
++    lifecycle: orchestration.lifecycle,
++    scheduleStore: options.scheduleStore,
++    externalAgentRunner: options.externalAgentRunner,
++  });
++  return Object.assign(intake, { runtimeHost: orchestration.runtimeHost });
++}
++
+ interface IntakeHarness {
+   cfg: Config;
+   conversationStore: ConversationStore;
+-  agentRunners: Map<string, AgentRunner>;
++  runtimeHost: ReturnType<typeof createConversationOrchestration>["runtimeHost"];
+   intake: ReturnType<typeof createTelegramIntake> & { lifecycle: ConversationLifecycle };
+   bot: Bot;
+   bufferLocators: Surface[];
+@@ -201,16 +258,14 @@ function installVoiceFetch(opts: {
+ 
+ function makeHarness(cfg = makeConfig(), subagentRunner: SubagentRunner = new SubagentRunner(cfg)): IntakeHarness {
+   const conversationStore = new ConversationStore(cfg.goblinHome);
+-  const agentRunners = new Map<string, AgentRunner>();
+   const bufferLocators: Surface[] = [];
+   const editForumTopic = mock(async () => true);
+   const bot = fakeBot(editForumTopic);
+-  const intake = createTelegramIntake({
++  const testIntake = createTestIntake({
+     cfg,
+     bot,
+     subagentRunner,
+     memoryStore: new MemoryStore(cfg.goblinHome),
+-    agentRunners,
+     createMessageBuffer: (surface) => {
+       bufferLocators.push(surface);
+       return {} as MessageBuffer;
+@@ -221,7 +276,28 @@ function makeHarness(cfg = makeConfig(), subagentRunner: SubagentRunner = new Su
+       return runner as unknown as AgentRunner;
+     },
+   });
+-  return { cfg, conversationStore, agentRunners, intake, bot, bufferLocators, editForumTopic, subagentRunner };
++  return {
++    cfg,
++    conversationStore,
++    runtimeHost: testIntake.runtimeHost,
++    intake: testIntake,
++    bot,
++    bufferLocators,
++    editForumTopic,
++    subagentRunner,
++  };
++}
++
++function registerTestRunner(
++  runtimeHost: ReturnType<typeof createConversationOrchestration>["runtimeHost"],
++  conversationId: string,
++  runner: AgentRunner,
++): void {
++  runtimeHost.registerSurfaceRuntime(conversationId, runner, {
++    surfaceId: surfaceId(dmSurface(1)),
++    runtimeId: DelegatedWorkHost.newRuntimeId(),
++    skillContext: { policyFingerprint: "test", manifestFingerprint: null },
++  });
+ }
+ 
+ function makeMessage(replies: string[] = [], overrides: Partial<TelegramIntakeMessage> = {}): TelegramIntakeMessage {
+@@ -312,7 +388,7 @@ describe("Telegram intake", () => {
+   });
+ 
+   it("applies runner-disposing command side effects", async () => {
+-    const { cfg, agentRunners, intake } = makeHarness();
++    const { cfg, runtimeHost, intake } = makeHarness();
+     const replies: string[] = [];
+     const message = makeMessage(replies);
+ 
+@@ -323,7 +399,7 @@ describe("Telegram intake", () => {
+     await intake.handleText(message, "/archive");
+ 
+     expect(firstRunner.dispose).toHaveBeenCalledTimes(1);
+-    expect(agentRunners.has(firstConversation.id)).toBe(false);
++    expect(runtimeHost.hasRunner(firstConversation.id)).toBe(false);
+     expect(replies.at(-1)).toContain("Conversation archived");
+ 
+     await intake.handleText(message, "/new");
+@@ -333,7 +409,7 @@ describe("Telegram intake", () => {
+     await intake.handleText(message, `/project ${cfg.goblinHome}`);
+ 
+     expect(secondRunner.dispose).toHaveBeenCalledTimes(1);
+-    expect(agentRunners.has(secondConversation.id)).toBe(false);
++    expect(runtimeHost.hasRunner(secondConversation.id)).toBe(false);
+     expect(replies.at(-1)).toContain("Project assigned");
+   });
+ 
+@@ -542,16 +618,14 @@ describe("Telegram intake", () => {
+     // signal that contains only bounded identifiers.
+     const cfg = makeConfig();
+     const conversationStore = new ConversationStore(cfg.goblinHome);
+-    const agentRunners = new Map<string, AgentRunner>();
+     const warnSpy = spyOn(log, "warn");
+ 
+     const internalContext: InternalMemoryContext = { kind: "internal", caller: { kind: "internal" } };
+-    const intake = createTelegramIntake({
++    const intake = createTestIntake({
+       cfg,
+       bot: fakeBot(),
+       subagentRunner: new SubagentRunner(cfg),
+       memoryStore: new MemoryStore(cfg.goblinHome),
+-      agentRunners,
+       createMessageBuffer: () => ({}) as MessageBuffer,
+       createAgentRunner: (opts) => {
+         const runner = new MockAgentRunner({ ...opts, memoryContext: internalContext });
+@@ -566,8 +640,8 @@ describe("Telegram intake", () => {
+ 
+     await intake.handleText(message, "/new");
+     const conversationCount = conversationStore.list().length;
+-    const runnerCount = agentRunners.size;
+     const conversationId = intake.lifecycle.inspect(dmSurface(1))!.id;
++    const runnerCount = intake.dispatcher.hasRunner(conversationId) ? 1 : 0;
+ 
+     await intake.handlePhoto(message, fakeApi(), ["file-id"], undefined);
+     await flushMicrotasks();
+@@ -582,7 +656,7 @@ describe("Telegram intake", () => {
+ 
+     // 3. No additional binding lookup or runtime creation occurred.
+     expect(conversationStore.list()).toHaveLength(conversationCount);
+-    expect(agentRunners.size).toBe(runnerCount);
++    expect(intake.dispatcher.hasRunner(conversationId) ? 1 : 0).toBe(runnerCount);
+ 
+     // 4. The telemetry signal is bounded and contains no reply text.
+     const noContextCall = warnSpy.mock.calls.find((call) => call[0] === "no-transcript-writer-context");
+@@ -598,6 +672,30 @@ describe("Telegram intake", () => {
+     warnSpy.mockRestore();
+   });
+ 
++  it("keeps handleText in flight until accepted steering settles", async () => {
++    const { intake } = makeHarness();
++    const message = makeMessage([]);
++    const slow = deferred();
++    const steering = deferred();
++    MockAgentRunner.nextPrompt = async () => { await slow.promise; };
++    MockAgentRunner.nextFollowUp = async () => { await steering.promise; };
++
++    await intake.handleText(message, "/new");
++    await intake.handleText(message, "slow");
++    await waitFor(() => runners[0]!.isStreaming);
++
++    let handled = false;
++    const handling = intake.handleText(message, "steer this").then(() => { handled = true; });
++    await waitFor(() => runners[0]!.followUp.mock.calls.length === 1);
++    expect(runners[0]!.followUp).toHaveBeenCalledWith("[prepared] steer this");
++    expect(handled).toBe(false);
++
++    steering.resolve();
++    await handling;
++    expect(handled).toBe(true);
++    slow.resolve();
++  });
++
+   it("falls back to a fresh turn when a steer loses the streaming race", async () => {
+     const { intake } = makeHarness();
+     const replies: string[] = [];
+@@ -773,7 +871,7 @@ describe("Telegram intake", () => {
+   });
+ 
+   it("runs /archive directly when a wedged runtime cannot drain its prompt queue", async () => {
+-    const { agentRunners, intake } = makeHarness();
++    const { runtimeHost, intake } = makeHarness();
+     const replies: string[] = [];
+     const message = makeMessage(replies);
+     const pending = deferred();
+@@ -801,14 +899,14 @@ describe("Telegram intake", () => {
+ 
+     expect(replies.at(-1)).toBe("`[ok]` Conversation archived\\.");
+     expect(runner.dispose).toHaveBeenCalledTimes(1);
+-    expect(agentRunners.has(sessionId)).toBe(false);
++    expect(runtimeHost.hasRunner(sessionId)).toBe(false);
+     expect(intake.lifecycle.inspect(message.surface!)).toBeNull();
+ 
+     // The original prompt can settle late, but its stale queue cannot revive
+     // the archived runtime or append a delayed command reply.
+     pending.resolve();
+     await flushMicrotasks();
+-    expect(agentRunners.has(sessionId)).toBe(false);
++    expect(runtimeHost.hasRunner(sessionId)).toBe(false);
+   });
+ 
+   it("orphans a later-deferred command when an earlier /new swaps the runner", async () => {
+@@ -1011,7 +1109,7 @@ describe("Telegram intake", () => {
+     // before the queued scheduled turn starts. The isCurrent() guard must
+     // abort the scheduled turn without producing side effects — the scheduled
+     // prompt never reaches the disposed runner.
+-    const { intake, agentRunners } = makeHarness();
++    const { intake, runtimeHost } = makeHarness();
+     const replies: string[] = [];
+     const message = makeMessage(replies);
+     const pending = deferred();
+@@ -1032,7 +1130,7 @@ describe("Telegram intake", () => {
+ 
+     // Swap the runner out (as /new does) before the scheduled turn starts.
+     await dispatcher.disposeRunner(conversation.id);
+-    expect(agentRunners.has(conversation.id)).toBe(false);
++    expect(runtimeHost.hasRunner(conversation.id)).toBe(false);
+ 
+     // Release the in-flight turn. The queued scheduled turn wakes, sees its
+     // runner is no longer current, and aborts.
+@@ -1050,10 +1148,10 @@ describe("Telegram intake", () => {
+     const cfg = makeConfig();
+     const subagentRunner = new SubagentRunner(cfg);
+ 
+-    const { agentRunners, intake } = makeHarness(cfg, subagentRunner);
++    const { runtimeHost, intake } = makeHarness(cfg, subagentRunner);
+     const dispatcher = intake.dispatcher;
+     const runner = new MockAgentRunner({ sessionId: "sess-1" });
+-    agentRunners.set("sess-1", runner as unknown as AgentRunner);
++    registerTestRunner(runtimeHost, "sess-1", runner as unknown as AgentRunner);
+ 
+     const cancelBySession = mock(async (_sessionId: string) => {});
+     subagentRunner.cancelBySession = cancelBySession as unknown as SubagentRunner["cancelBySession"];
+@@ -1062,14 +1160,14 @@ describe("Telegram intake", () => {
+ 
+     expect(cancelBySession).not.toHaveBeenCalled();
+     expect(runner.dispose).toHaveBeenCalledTimes(1);
+-    expect(agentRunners.has("sess-1")).toBe(false);
++    expect(runtimeHost.hasRunner("sess-1")).toBe(false);
+   });
+ 
+   it("disposeRunner rethrows when runner.dispose throws (including falsy values)", async () => {
+     const cfg = makeConfig();
+     const subagentRunner = new SubagentRunner(cfg);
+ 
+-    const { agentRunners, intake } = makeHarness(cfg, subagentRunner);
++    const { runtimeHost, intake } = makeHarness(cfg, subagentRunner);
+     const dispatcher = intake.dispatcher;
+ 
+     // Falsy throw — `if (disposeErr)` alone would swallow this.
+@@ -1077,10 +1175,10 @@ describe("Telegram intake", () => {
+     falsyRunner.dispose.mockImplementation(() => {
+       throw null;
+     });
+-    agentRunners.set("sess-falsy", falsyRunner as unknown as AgentRunner);
++    registerTestRunner(runtimeHost, "sess-falsy", falsyRunner as unknown as AgentRunner);
+ 
+     await expect(dispatcher.disposeRunner("sess-falsy")).rejects.toBeNull();
+-    expect(agentRunners.has("sess-falsy")).toBe(false);
++    expect(runtimeHost.hasRunner("sess-falsy")).toBe(false);
+ 
+     // Real error — must also rethrow.
+     const errorRunner = new MockAgentRunner({ sessionId: "sess-err" });
+@@ -1088,10 +1186,10 @@ describe("Telegram intake", () => {
+     errorRunner.dispose.mockImplementation(() => {
+       throw disposeErr;
+     });
+-    agentRunners.set("sess-err", errorRunner as unknown as AgentRunner);
++    registerTestRunner(runtimeHost, "sess-err", errorRunner as unknown as AgentRunner);
+ 
+     await expect(dispatcher.disposeRunner("sess-err")).rejects.toBe(disposeErr);
+-    expect(agentRunners.has("sess-err")).toBe(false);
++    expect(runtimeHost.hasRunner("sess-err")).toBe(false);
+   });
+ 
+   it("saves the voice file and prompts with transcript + saved-file note for a personal environment", async () => {
+@@ -1450,14 +1548,12 @@ describe("Telegram intake", () => {
+ describe("createMessageBuffer factory", () => {
+   it("creates a Conversation-scoped MetricsStore for an active Conversation", async () => {
+     const cfg = makeConfig();
+-    const agentRunners = new Map<string, AgentRunner>();
+     const bot = fakeBot();
+-    const intake = createTelegramIntake({
++    const intake = createTestIntake({
+       cfg,
+       bot,
+       subagentRunner: new SubagentRunner(cfg),
+       memoryStore: new MemoryStore(cfg.goblinHome),
+-      agentRunners,
+       createAgentRunner: (opts) => {
+         const runner = new MockAgentRunner(opts);
+         runners.push(runner);
+@@ -1495,12 +1591,11 @@ describe("createMessageBuffer factory", () => {
+   it("operates without a MetricsStore when no Conversation exists", async () => {
+     const cfg = makeConfig();
+     const bot = fakeBot();
+-    const intake = createTelegramIntake({
++    const intake = createTestIntake({
+       cfg,
+       bot,
+       subagentRunner: new SubagentRunner(cfg),
+       memoryStore: new MemoryStore(cfg.goblinHome),
+-      agentRunners: new Map<string, AgentRunner>(),
+     });
+ 
+     const replies: string[] = [];
+@@ -1513,12 +1608,11 @@ describe("createMessageBuffer factory", () => {
+   it("createMessageBuffer with no Conversation yields a buffer with no metrics", () => {
+     const cfg = makeConfig();
+     const bot = fakeBot();
+-    const intake = createTelegramIntake({
++    const intake = createTestIntake({
+       cfg,
+       bot,
+       subagentRunner: new SubagentRunner(cfg),
+       memoryStore: new MemoryStore(cfg.goblinHome),
+-      agentRunners: new Map<string, AgentRunner>(),
+     });
+ 
+     const surface = dmSurface(1);
+diff --git a/src/tg/intake.ts b/src/tg/intake.ts
+index d113d03..ecd6512 100644
+--- a/src/tg/intake.ts
++++ b/src/tg/intake.ts
+@@ -10,24 +10,17 @@ import { handleCommand, type DispatchDeps } from "../commands/dispatch.ts";
+ import { parseCommand } from "../commands/parse.ts";
+ import { resolveCommand, resolveTiming, type SideEffect } from "../commands/registry.ts";
+ import { interruptAndCascade } from "../interrupt.ts";
+-import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
+-import { MetricsStore } from "../metrics/mod.ts";
++import { MemoryStore } from "../memory/mod.ts";
+ import { type ConversationState } from "../sessions/mod.ts";
+ import { surfaceId, type Surface, type GuestSurface } from "../surface.ts";
+ import type { ExecutionEnvironment } from "../sessions/environment.ts";
+ import { saveAttachment, UnsafeAttachmentNameError, type SavedAttachment } from "./attachments.ts";
+ import { SubagentRunner } from "../subagents/mod.ts";
+-import { TurnDispatcher, type PromptContent, type TurnSink } from "../orchestration/dispatcher.ts";
+-import { createConversationLifecycle, FileSurfaceSettings } from "../orchestration/conversation-lifecycle.ts";
+-import { createTurnDispatcherRuntimeHost } from "../orchestration/conversation-runtime-host.ts";
++import type { TurnDispatcher, PromptContent } from "../orchestration/dispatcher.ts";
++import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
+ import type { ExternalAgentRunner } from "../external-agents/mod.ts";
+-import type { McpRunner } from "../mcp/mod.ts";
+-import type { DelegatedWorkHost } from "../delegated-work/mod.ts";
+ 
+ import { transcribeWithGroq } from "../asr/mod.ts";
+-import { MessageBuffer, createTextToSpeechTool } from "./mod.ts";
+-import { createSendDocumentTool, createSendPhotoTool, createSendVoiceTool } from "./tools.ts";
+-import { isPrivateChat } from "./delivery.ts";
+ import { GuestReplySink } from "./guest-sink.ts";
+ import { type ReplyOpts, sendSystemReply } from "./format.ts";
+ import type { ScheduleStore } from "../scheduler/store.ts";
+@@ -75,28 +68,13 @@ export interface TelegramIntakeOptions {
+   bot: Bot;
+   subagentRunner: SubagentRunner;
+   memoryStore: MemoryStore;
+-  agentRunners: Map<string, AgentRunner>;
+-  promptQueues?: Map<string, Promise<void>>;
+-  createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
+-  /** Shared embedding provider for agent memory stores. */
+-  embeddingProvider?: EmbeddingProvider;
+-  /** Shared dreaming pipeline for background memory promotion. */
+-  dreamingPipeline?: DreamingPipeline;
+-  /**
+-   * Optional override for the turn-sink factory. Production leaves this unset
+-   * and `createTelegramIntake` builds the default `MessageBuffer` factory
+-   * (Telegram rendering + the `onTopicNotFound` orphan-archive hook). Tests
+-   * inject a fake to observe sink creation without a real `MessageBuffer`.
+-   */
+-  createMessageBuffer?: (surface: Surface, session?: ConversationState) => TurnSink;
+-  /** Shared schedule store for `/schedule`. Wired in Phase 6 (bot.ts). */
++  /** Runtime kernel assembled by the composition root. */
++  dispatcher: TurnDispatcher;
++  lifecycle: ConversationLifecycle;
++  /** Shared schedule store for `/schedule`. */
+   scheduleStore?: ScheduleStore;
+   /** Shared external agent runner. Wired in Phase 6 (bot.ts). */
+   externalAgentRunner?: ExternalAgentRunner;
+-  /** Shared MCP runner. Wired in buildBot. */
+-  mcpRunner?: McpRunner;
+-  /** Shared delegated-work lifecycle host. */
+-  delegatedWorkHost?: DelegatedWorkHost;
+ }
+ 
+ type ActiveTurn = {
+@@ -195,77 +173,20 @@ export function replyNoActiveSession(message: TelegramIntakeMessage, surface: Su
+ }
+ 
+ export function createTelegramIntake(options: TelegramIntakeOptions) {
+-  const { cfg, bot, subagentRunner, memoryStore, embeddingProvider, dreamingPipeline } = options;
+-  // The turn-sink factory: builds a `MessageBuffer` targeting the Telegram
+-  // surface for a surface. This rendering logic lived inside the dispatcher
+-  // before relocation; it moves here (the Telegram layer) so the dispatcher
+-  // stays transport-agnostic. Tests override via `options.createMessageBuffer`.
+-  const createMessageBuffer = options.createMessageBuffer ?? ((surface: Surface, session?: ConversationState): TurnSink => {
+-    const metrics = session ? new MetricsStore(cfg.goblinHome, session.id) : undefined;
+-    return new MessageBuffer(bot, surface, {
+-      visibility: cfg.toolVisibility,
+-      metrics,
+-      drafts: isPrivateChat(surface),
+-      onTopicNotFound:
+-        surface.kind === "topic"
+-          ? async () => {
+-              await memoryStore.archiveOrphan(surface.chatId, surface.topicId);
+-            }
+-          : undefined,
+-    });
+-  });
+-  // Beta tool factory: builds the Telegram-specific tools (voice, photo,
+-  // document, TTS) for a chat. The dispatcher does not import from `src/tg/`;
+-  // this factory is injected so the Telegram layer owns beta tool creation.
+-  const createBetaTools = (surface: Surface) => {
+-    if (surface.kind === "guest") {
+-      // Guest surfaces do not support normal chat send methods.
+-      return [createTextToSpeechTool()];
+-    }
+-    return [
+-      createSendVoiceTool(bot, surface),
+-      createSendPhotoTool(bot, surface),
+-      createSendDocumentTool(bot, surface),
+-      createTextToSpeechTool(),
+-    ].filter((t): t is NonNullable<typeof t> => t !== null);
+-  };
+-  const surfaceSettings = new FileSurfaceSettings(cfg.goblinHome);
+-
+-  // The lifecycle owns runtime authority, while its runtime host delegates to
+-  // the dispatcher. Build the lifecycle first through a guarded provider, then
+-  // pass that complete authority into the dispatcher constructor. There is no
+-  // optional post-construction wiring path: no Surface runtime can exist until
+-  // both sides of this composition boundary exist.
+-  const dispatcherRef: { current: TurnDispatcher | null } = { current: null };
+-  const lifecycle = createConversationLifecycle(
+-    cfg.goblinHome,
+-    createTurnDispatcherRuntimeHost(() => {
+-      if (dispatcherRef.current === null) {
+-        throw new Error("conversation runtime host used before dispatcher construction");
+-      }
+-      return dispatcherRef.current;
+-    }),
+-    surfaceSettings,
+-  );
+-  const dispatcher = new TurnDispatcher({
+-    cfg,
+-    surfaceSettings,
+-    subagentRunner,
+-    memoryStore,
+-    agentRunners: options.agentRunners,
+-    promptQueues: options.promptQueues,
+-    createAgentRunner: options.createAgentRunner,
+-    createMessageBuffer,
+-    createBetaTools,
+-    scheduleStore: options.scheduleStore,
+-    externalAgentRunner: options.externalAgentRunner,
+-    mcpRunner: options.mcpRunner,
+-    delegatedWorkHost: options.delegatedWorkHost,
+-    embeddingProvider,
+-    dreamingPipeline,
+-    surfaceRuntimeAuthority: lifecycle,
+-  });
+-  dispatcherRef.current = dispatcher;
++  const { cfg, bot, subagentRunner, memoryStore, dispatcher, lifecycle } = options;
++  let admissionOpen = true;
++
++  function closeAdmission(): void {
++    if (!admissionOpen) return;
++    admissionOpen = false;
++    log.info("telegram intake admission closed");
++  }
++
++  function admit(kind: string): boolean {
++    if (admissionOpen) return true;
++    log.info("telegram intake dropped after admission closed", { kind });
++    return false;
++  }
+ 
+   function recordAssistantReply(
+     sessionId: string,
+@@ -397,21 +318,23 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
+     );
+   }
+ 
+-  function steerOrFallbackToFreshTurn(
++  async function steerOrFallbackToFreshTurn(
+     message: TelegramIntakeMessage,
+     surface: Surface,
+     session: ConversationState,
+     runner: AgentRunner,
+     text: string,
+-  ): void {
+-    void runner.followUp(message.prepare(text)).catch((err) => {
++  ): Promise<void> {
++    try {
++      await runner.followUp(message.prepare(text));
++    } catch (err) {
+       const msg = err instanceof Error ? err.message : String(err);
+       if (msg.includes("not streaming")) {
+         scheduleFreshTurn(message, surface, session, runner, text, "runner prompt failed (steer race fallback)");
+         return;
+       }
+       log.warn("steer failed", { error: msg, sessionId: session.id });
+-    });
++    }
+   }
+ 
+   async function resolveActiveTurn(message: TelegramIntakeMessage, kind: string): Promise<ActiveTurn | null> {
+@@ -484,6 +407,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
+   }
+ 
+   async function handleText(message: TelegramIntakeMessage, rawText: string | undefined): Promise<void> {
++    if (!admit("text")) return;
+     const surface = message.surface;
+     if (!surface) {
+       log.debug("dropping message: no surface");
+@@ -578,7 +502,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
+     }
+ 
+     if (runner.isStreaming) {
+-      steerOrFallbackToFreshTurn(message, surface, session, runner, rawText);
++      await steerOrFallbackToFreshTurn(message, surface, session, runner, rawText);
+       return;
+     }
+ 
+@@ -586,6 +510,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
+   }
+ 
+   async function handlePhoto(message: TelegramIntakeMessage, api: Bot["api"], fileIds: string[], caption?: string): Promise<void> {
++    if (!admit("photo")) return;
+     const turn = await resolveActiveTurn(message, "photo");
+     if (!turn) return;
+ 
+@@ -615,6 +540,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
+   }
+ 
+   async function handleDocument(message: TelegramIntakeMessage, api: Bot["api"], doc: TelegramDocumentInput): Promise<void> {
++    if (!admit("document")) return;
+     const turn = await resolveActiveTurn(message, "document");
+     if (!turn) return;
+ 
+@@ -672,6 +598,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
+   }
+ 
+   async function handleVoice(message: TelegramIntakeMessage, api: Bot["api"], voice: TelegramVoiceInput): Promise<void> {
++    if (!admit("voice")) return;
+     const turn = await resolveActiveTurn(message, "voice");
+     if (!turn) return;
+ 
+@@ -771,6 +698,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
+   }
+ 
+   async function handleAudio(message: TelegramIntakeMessage, api: Bot["api"], audio: TelegramAudioInput): Promise<void> {
++    if (!admit("audio")) return;
+     const turn = await resolveActiveTurn(message, "audio");
+     if (!turn) return;
+ 
+@@ -833,6 +761,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
+   }
+ 
+   async function handleTopicDescription(chatId: number | undefined, topicId: number | undefined, name: string | undefined): Promise<void> {
++    if (!admit("topic-description")) return;
+     if (chatId === undefined || topicId === undefined || name === undefined) return;
+     try {
+       await memoryStore.setDescription(
+@@ -863,6 +792,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
+    * summoner sees nothing, but the bot does not crash.
+    */
+   async function handleGuestMessage(message: GuestMessage, text: string): Promise<void> {
++    if (!admit("guest")) return;
+     const surface = message.surface;
+     let conversation: ConversationState;
+     try {
+@@ -922,6 +852,7 @@ export function createTelegramIntake(options: TelegramIntakeOptions) {
+     handleAudio,
+     handleTopicDescription,
+     handleGuestMessage,
++    closeAdmission,
+     dispatcher,
+     lifecycle,
+   };
+diff --git a/src/tg/runtime-adapters.ts b/src/tg/runtime-adapters.ts
+new file mode 100644
+index 0000000..ce4046f
+--- /dev/null
++++ b/src/tg/runtime-adapters.ts
+@@ -0,0 +1,53 @@
++import type { Bot } from "grammy";
++import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
++import type { Config } from "../config.ts";
++import { MemoryStore } from "../memory/mod.ts";
++import { MetricsStore } from "../metrics/mod.ts";
++import type { ConversationState } from "../sessions/types.ts";
++import type { Surface } from "../surface.ts";
++import type { TurnSink } from "../orchestration/mod.ts";
++import { MessageBuffer, createTextToSpeechTool } from "./mod.ts";
++import { createSendDocumentTool, createSendPhotoTool, createSendVoiceTool } from "./tools.ts";
++import { isPrivateChat } from "./delivery.ts";
++
++export interface TelegramRuntimeAdapters {
++  readonly createMessageBuffer: (surface: Surface, conversation?: ConversationState) => TurnSink;
++  readonly createBetaTools: (surface: Surface) => ToolDefinition[];
++}
++
++/** Telegram-owned factories injected into the transport-neutral runtime kernel. */
++export function createTelegramRuntimeAdapters(options: {
++  readonly cfg: Config;
++  readonly bot: Bot;
++  readonly memoryStore: MemoryStore;
++  readonly createMessageBuffer?: (surface: Surface, conversation?: ConversationState) => TurnSink;
++}): TelegramRuntimeAdapters {
++  const createMessageBuffer = options.createMessageBuffer ?? ((surface: Surface, conversation?: ConversationState): TurnSink => {
++    const metrics = conversation ? new MetricsStore(options.cfg.goblinHome, conversation.id) : undefined;
++    return new MessageBuffer(options.bot, surface, {
++      visibility: options.cfg.toolVisibility,
++      metrics,
++      drafts: isPrivateChat(surface),
++      onTopicNotFound:
++        surface.kind === "topic"
++          ? async () => {
++              await options.memoryStore.archiveOrphan(surface.chatId, surface.topicId);
++            }
++          : undefined,
++    });
++  });
++
++  const createBetaTools = (surface: Surface) => {
++    if (surface.kind === "guest") {
++      return [createTextToSpeechTool()];
++    }
++    return [
++      createSendVoiceTool(options.bot, surface),
++      createSendPhotoTool(options.bot, surface),
++      createSendDocumentTool(options.bot, surface),
++      createTextToSpeechTool(),
++    ].filter((tool): tool is NonNullable<typeof tool> => tool !== null);
++  };
++
++  return { createMessageBuffer, createBetaTools };
++}

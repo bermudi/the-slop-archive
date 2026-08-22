@@ -25,7 +25,7 @@ tests/
   calibrate.py        scores deliberate partial solutions (bands TBD)
   hidden/             held-out contract tests (NOT yet authored; README.md
                       inside fixes the authoring rules)
-solution/             reference implementation (PENDING; README.md inside)
+solution/             reference patch + changed-file snapshot @ 1c8420b
 task.toml             Harbor recipe config + provenance metadata
 ```
 
@@ -44,9 +44,12 @@ task.toml             Harbor recipe config + provenance metadata
   accepted cycle, i.e. the task's gold prose. Base state is green: 2,517
   tests pass, and two identical junit ledgers confirm the suite's
   determinism on this host.
-- **Reference solution** = **TBD.** Deliberately not authored yet (see
-  `solution/README.md`): the reference must be the real, review-proven
-  implementation once it exists, not a fabricated stand-in.
+- **Reference solution** = `little-goblin` @ `1c8420b` (full SHA in
+  `task.toml`), the real implementation and review-hardening commit for the
+  bounded runtime-kernel cut. Its immediate successor `aa3803a` starts the
+  explicitly out-of-scope prepared-runtime capability. `solution.patch` is
+  the exact 1340493..1c8420b diff; `solution/reference/` holds its 24 changed
+  files.
 - Machine-readable record: `task.toml [metadata]`
   (`base_commit`, `base_curation`, `solution_commit`, `session`).
 
@@ -98,14 +101,11 @@ committed + staged + working-tree changes.
   built image without network and diff against the host ledger) may surface
   more exclusions. Until that smoke test runs, EXCLUDE_TESTS is provisional.
 
-## Finishing the task (when the real patch exists)
+## Finishing the task
 
-1. **Land the reference implementation** — the review-complete
-   runtime-kernel ownership cycle (or whatever the accepted final patch is).
-   Copy its source into `solution/reference/`; generate
-   `solution/solution.patch` from a scratch repo (`git diff --binary
-   base..solution`) and re-point `solution_commit` in `task.toml`.
-2. **Author the hidden suite** (`tests/hidden/`) *with* the reference,
+1. ~~**Land the reference implementation.**~~ Done: `1340493..1c8420b`;
+   patch application against the curated base is checked.
+2. **Author the hidden suite** (`tests/hidden/`) against the reference,
    per `tests/hidden/README.md`: one test per session "Done means" item,
    failing on base, passing on reference. Record graded paths in `test.sh`
    (HIDDEN_TARGETS) and `gen_manifest.py` (HIDDEN_FILES).
@@ -192,11 +192,11 @@ uv run python tests/calibrate.py        # needs bun + little-goblin's node_modul
 
 ## Known limitations
 
-- **Groundwork state:** the manifest is a zero-point stub, `solution/` is
-  empty, `tests/hidden/` is a spec — this task must not be graded until the
-  "Finishing the task" checklist runs. It *can* be smoke-tested: the whole
-  pipeline (collect → typecheck → restore → run → score) is wired and will
-  produce a deterministic 0.
+- **Authoring state:** the reference is materialized, but the manifest is a
+  zero-point stub and `tests/hidden/` is still only an authoring guide. This
+  task must not be graded until the remaining "Finishing the task" checklist
+  runs. It *can* be smoke-tested: the whole pipeline (collect → typecheck →
+  restore → run → score) is wired and will produce a deterministic 0.
 - **bun version pin: `oven/bun:1.3.7` (NOT 1.2.x).** little-goblin's base
   suite uses `vi.useFakeTimers`, which bun ≤1.2.23 cannot run: on the
   original 1.2.21 pin the coalesce tests double-run and fail
@@ -211,7 +211,8 @@ uv run python tests/calibrate.py        # needs bun + little-goblin's node_modul
   `file::line::name` (2,517 unique keys — verified; `file::name` collides
   on parametrized tests). The manifest is keyed to the junit (the graded
   ledger), so generation and scoring must run on the same junit.
-- **Patch collector** does not capture untracked files; the instruction says
-  to commit, so an agent that never `git add`s a new file loses it.
+- **Patch collector** stages the final non-ignored worktree before producing
+  one coherent base-to-final diff, so committed, staged, unstaged, and new
+  files are all captured.
 - The "architecture tier" (import-graph assertions) is deliberately
   structural; keep it small and explicit (see `tests/hidden/README.md`).

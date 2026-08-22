@@ -5,8 +5,8 @@ Every entry is a named behavioral scenario; the expected outcome is the
 design contract. If any scenario deviates, the harness exits 1 — the bands
 are part of the frozen rubric, not decoration.
 
-GROUNDWORK STATUS: scenarios and bands are TBD until the reference
-implementation and hidden suite exist (see README "Finishing the task").
+AUTHORING STATUS: the reference is materialized; scenarios and bands are TBD
+until the hidden suite exists (see README "Finishing the task").
 The harness itself is complete: it builds base/gold trees from the task
 directory and runs the same bun junit + score.py pipeline the verifier uses.
 
@@ -39,12 +39,12 @@ from pathlib import Path
 
 TASK_DIR = Path(__file__).resolve().parent.parent
 ENV_DIR = TASK_DIR / "environment" / "little-goblin"
-REFERENCE_DIR = TASK_DIR / "solution" / "reference"  # TBD until reference lands
+REFERENCE_DIR = TASK_DIR / "solution" / "reference"
 HIDDEN_DIR = TASK_DIR / "tests" / "hidden"
 SCORE_PY = Path(__file__).parent / "score.py"
 
 EXPECTED = {
-    # TODO(groundwork): fill bands once reference + hidden suite exist.
+    # TODO(authoring): fill bands once the hidden suite exists.
     # "base": ("scored", 0),
     # "gold": ("scored", 100),
 }
@@ -91,8 +91,8 @@ def score(work: Path, name: str, d: Path) -> tuple[str, int | None]:
 
 
 def build_scenarios(work: Path, node_modules: Path) -> dict[str, Path]:
-    """TODO(groundwork): construct base + gold + partial trees once the
-    reference implementation and hidden suite exist. Base tree = ENV_DIR
+    """TODO(authoring): construct base + gold + partial trees once the hidden
+    suite exists. Base tree = ENV_DIR
     (the curated snapshot); gold = base + reference; partials are surgical
     edits of gold targeting the session's "Done means" items."""
     base_app = work / "base-app"

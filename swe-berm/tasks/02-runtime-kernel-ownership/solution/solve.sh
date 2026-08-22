@@ -10,7 +10,7 @@ if ! git rev-parse --verify base >/dev/null 2>&1; then
   exit 1
 fi
 if [ ! -f "$DIR/solution.patch" ]; then
-  echo "solution.patch missing — reference not yet authored (see README.md)"
+  echo "solution.patch missing"
   exit 1
 fi
 git apply --binary "$DIR/solution.patch"

@@ -159,19 +159,24 @@ Validated (dry-run in /tmp, no Docker):
 - Docker daemon was unavailable during this pass — `harbor run` still
   needs a final smoke test once dockerd is up.
 
-**Task 02 — scaffolding complete, gold patch pending (designer-owned):**
+**Task 02 — gold identified, verifier authoring pending:**
 `tasks/02-runtime-kernel-ownership/` — "runtime-kernel ownership" refactor
 of `little-goblin` @ `1340493`, derived from the 2026-08-09 dependency-map
 session (uncommitted docs = gold prose, excluded from base). Base suite:
 2517 pass / 0 fail on ext4 (built with bun ≥1.3.x). Image pins
 **oven/bun:1.3.7** (1.2.x can't run `vi.useFakeTimers`). Voice edge-tts
 test (`src/voice.test.ts`) calls live network via `uvx` — must be excluded
-from the graded no-network run. Verifier machinery (test.sh/score.py/
+from the graded no-network run. The gold is exactly
+`1340493..1c8420b` (`arch(runtime-kernel): centralize runtime ownership and
+shutdown fencing`), a 24-file/3,788-line patch containing the implementation
+and its review fixes. Do not include successor `aa3803a`: it begins the
+explicitly out-of-scope PreparedRuntimeAssembler capability. The patch and
+changed-file reference snapshot are materialized in `solution/`.
+Verifier machinery (test.sh/score.py/
 gen_manifest.py/calibrate.py, manifest keyed `file::line::name`) validated
 and e2e-simulated on ext4 (apply → typecheck → restore → graded run →
-scored 0 with the stub manifest); `solution.patch` and `reference/` NOT
-yet authored — wait for the real final patch from the session's
-implementation instead.
+scored 0 with the stub manifest); hidden contract tests, the weighted
+manifest, calibration scenarios, and Docker smoke tests remain.
 
 ## Hazard: junit duplicate keys
 
