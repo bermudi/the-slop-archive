@@ -282,3 +282,22 @@ it does.
   "novelty immunity."
 - **Single task per track** is inherent to the hardware (one tablet,
   serialized access). Medians over repeated runs are the mitigation.
+
+## Open items before first campaign
+
+- **Stage the drift anchors.** `/opt/n810/anchor/{gbn8-arm-headless,
+  gbn810-arm}` do not exist on the device (checked 2026-09-15). Candidate
+  binaries with those exact names sit in `~/.n810-run/` — healthy device-gcc
+  builds, zero v6K opcodes, `gbn810-arm` carrying the baseline's dead-OSS
+  strings as an unmodified anchor should. Verify provenance (patched
+  baseline tree, serial→stdout), then root-copy. Until staged, Track B scores
+  against the baked-in 41.1/30.9 fps measurements with no in-session drift
+  control.
+- **Reset the device home dir.** `/home/user` still holds pre-benchmark
+  litter: `pokemon.gb` + saves (a copyrighted ROM on the agent-visible
+  filesystem — contamination and publishing risk), old fb dumps,
+  `SDL-headers/`, `bench/` trees. Define and run a reset manifest before real
+  runs; monitor rootfs free space across the campaign.
+- The repo's prebuilt `gb4n810/gbn810` (zig-built, v6K-poisoned, SIGILLs on
+  the tablet) is kept as a historical specimen of two documented failure
+  classes — nothing consumes it.
