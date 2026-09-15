@@ -224,9 +224,12 @@ for line in raw.splitlines():
     if line.startswith("#diag"):
         trap = int(line.split()[-1] == "1")
         continue
-    p = line.split()
-    if len(p) == 2 and p[1] in ("0", "1"):
-        results[p[0]] = int(p[1] == "1")
+    name, sp, val = line.rpartition(" ")   # filenames may contain spaces
+    if name and val in ("0", "1"):
+        if name == "trap.gb":              # THE diagnostic (suite.tsv header)
+            trap = int(val == "1")
+        else:
+            results[name] = int(val == "1")
 json.dump({"results": results, "trap_diagnostic": trap}, sys.stdout)
 PY
     say "suite: $(tr -d '\n' < "$ROMSJSON" | cut -c1-400)"

@@ -1,0 +1,64 @@
+{
+ "generated": "2026-09-15T17:10:25",
+ "runs": 20,
+ "frame_cap": 1200,
+ "hl_bin": "tests/ref core built on device: gcc 3.4.4 -O2 -std=c99",
+ "hl_hash": "a4d2ba84362ae80047b3753d6d4482950f9b2124b049ec997a9ec13df7d755c2",
+ "suite": [
+  "alu.gb",
+  "jr.gb",
+  "intr.gb",
+  "hello.gb",
+  "01-special.gb",
+  "06-ld r,r.gb"
+ ],
+ "diagnostics": [
+  "trap.gb"
+ ],
+ "baseline_passes": [
+  "alu.gb",
+  "jr.gb",
+  "intr.gb",
+  "hello.gb",
+  "01-special.gb",
+  "06-ld r,r.gb"
+ ],
+ "flaky": [],
+ "per_rom": {
+  "alu.gb": {
+   "mode": "blargg",
+   "want": "PASS",
+   "rate": 1.0
+  },
+  "jr.gb": {
+   "mode": "blargg",
+   "want": "PASS",
+   "rate": 1.0
+  },
+  "intr.gb": {
+   "mode": "blargg",
+   "want": "PASS",
+   "rate": 1.0
+  },
+  "hello.gb": {
+   "mode": "blargg",
+   "want": "PASS",
+   "rate": 1.0
+  },
+  "01-special.gb": {
+   "mode": "blargg",
+   "want": "Passed",
+   "rate": 1.0
+  },
+  "06-ld r,r.gb": {
+   "mode": "blargg",
+   "want": "Passed",
+   "rate": 1.0
+  },
+  "trap.gb": {
+   "mode": "diagnostic",
+   "want": "silent+clean-exit",
+   "rate": 1.0
+  }
+ }
+}

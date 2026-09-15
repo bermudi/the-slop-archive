@@ -81,6 +81,7 @@ for line in open(suite_tsv):
 
 per = collections.defaultdict(list)
 diag = []
+suite_set = set(suite)
 for line in open(res_path):
     line = line.strip()
     if not line:
@@ -88,10 +89,13 @@ for line in open(res_path):
     if line.startswith("#diag"):
         diag.append(line.split()[-1] == "1")
         continue
-    parts = line.split()
-    if len(parts) != 2 or parts[1] not in ("0", "1"):
+    name, _, val = line.rpartition(" ")   # filenames may contain spaces
+    if not name or val not in ("0", "1"):
         sys.exit(f"FATAL: bad result line: {line!r}")
-    per[parts[0]].append(parts[1] == "1")
+    if name in suite_set:
+        per[name].append(val == "1")
+    elif name == "trap.gb":      # THE diagnostic (see suite.tsv header)
+        diag.append(val == "1")
 
 for f in suite:
     if len(per[f]) != n:
@@ -115,8 +119,7 @@ manifest = {
     "per_rom": {
         **{f: {**meta[f], "rate": round(sum(per[f]) / len(per[f]), 3)} for f in suite},
         "trap.gb": {"mode": "diagnostic", "want": "silent+clean-exit",
-                    "rate": round(sum(diag) / len(diag), 3) if diag else None},
-    },
+                    "rate": round(sum(diag) / len(diag), 3) if diag else None},    },
 }
 json.dump(manifest, open(out_path, "w"), indent=1)
 print(json.dumps({k: manifest[k] for k in ("baseline_passes", "flaky")}, indent=1))
