@@ -25,6 +25,9 @@
 #
 # Output: <out>.png  — 800x480 screenshot of the actual panel
 #         <out>.log  — the binary's stdout/stderr
+#         <out>.fd   — /proc/<pid> evidence snapshots (fd table + audio libs
+#                      in maps) taken in-run; proves what the app actually
+#                      opened (audio device, X socket, files)
 #         exit 0 if the process was still alive at screenshot time,
 #         exit 1 if it died early (log shows how).
 set -u
@@ -71,16 +74,20 @@ if [ "$MODE" = fbdev ]; then
     # Root shell: freeze X, run, dump fb at requested times while running,
     # restore X with SIGCONT.
     # Everything lives in /home/user — /tmp is a 512KB tmpfs, too small.
-    DUMPPART="E=0; for T in $RDUMPS; do sleep \$((T-E)); E=\$T; dd if=/dev/fb0 bs=1600 count=480 of=$RBIN.t\$T.fb 2>/dev/null; done; sleep \$((SECS_PLACEHOLDER-E))"
-    DUMPPART=$(echo "$DUMPPART" | sed "s/SECS_PLACEHOLDER/$SECS/")
-    if [ -z "$DUMPS" ]; then DUMPPART="sleep $SECS"; fi
+    # Each dump time also snapshots /proc/$EP/{fd,maps-audio}: what the app
+    # actually opened (catches working audio via /dev/dsptask*, libasound,
+    # libesd — and dead OSS commits that opened nothing).
+    DUMPPART="E=0; for T in $RDUMPS; do sleep \$((T-E)); E=\$T; dd if=/dev/fb0 bs=1600 count=480 of=$RBIN.t\$T.fb 2>/dev/null; ls -l /proc/\$EP/fd 2>/dev/null > $RBIN.fd.t\$T; echo ---maps >> $RBIN.fd.t\$T; grep libasound /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.t\$T; grep libesd /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.t\$T; done; sleep \$((SECS_PLACEHOLDER-E))"
+    DUMPPART=$(echo "$DUMPPART" | sed "s/SECS_PLACEHOLDER/$SECS/g")
+    if [ -z "$DUMPS" ]; then DUMPPART="sleep \$((SECS_PLACEHOLDER/2)); ls -l /proc/\$EP/fd 2>/dev/null > $RBIN.fd.mid; echo ---maps >> $RBIN.fd.mid; grep libasound /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.mid; grep libesd /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.mid; sleep \$((SECS_PLACEHOLDER-SECS_PLACEHOLDER/2))"; DUMPPART=$(echo "$DUMPPART" | sed "s/SECS_PLACEHOLDER/$SECS/g"); fi
     ssh n810 "X=\$(pidof Xomap); printf 'kill -STOP '\$X'; chmod +x $RBIN; $RBIN $RROM > $RBIN.log 2>&1 & EP=\$!; $DUMPPART; kill -0 \$EP 2>/dev/null && echo ALIVE > $RBIN.status || echo DEAD > $RBIN.status; dd if=/dev/fb0 bs=1600 count=480 of=$RBIN.fb 2>/dev/null; kill \$EP 2>/dev/null; kill -CONT '\$X'; exit\n' | sudo gainroot" \
         || { echo "n810-run: device command failed" >&2; exit 3; }
 else
     # X11 mode: just launch on the desktop. Screenshot anytime.
-    DUMPPART="E=0; for T in $RDUMPS; do sleep \$((T-E)); E=\$T; dd if=/dev/fb0 bs=1600 count=480 of=$RBIN.t\$T.fb 2>/dev/null; done; sleep \$((SECS_PLACEHOLDER-E))"
-    DUMPPART=$(echo "$DUMPPART" | sed "s/SECS_PLACEHOLDER/$SECS/")
-    if [ -z "$DUMPS" ]; then DUMPPART="sleep $SECS"; fi
+    # Same /proc snapshots as fbdev mode — fd table + audio libs per dump.
+    DUMPPART="E=0; for T in $RDUMPS; do sleep \$((T-E)); E=\$T; dd if=/dev/fb0 bs=1600 count=480 of=$RBIN.t\$T.fb 2>/dev/null; ls -l /proc/\$EP/fd 2>/dev/null > $RBIN.fd.t\$T; echo ---maps >> $RBIN.fd.t\$T; grep libasound /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.t\$T; grep libesd /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.t\$T; done; sleep \$((SECS_PLACEHOLDER-E))"
+    DUMPPART=$(echo "$DUMPPART" | sed "s/SECS_PLACEHOLDER/$SECS/g")
+    if [ -z "$DUMPS" ]; then DUMPPART="sleep \$((SECS_PLACEHOLDER/2)); ls -l /proc/\$EP/fd 2>/dev/null > $RBIN.fd.mid; echo ---maps >> $RBIN.fd.mid; grep libasound /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.mid; grep libesd /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.mid; sleep \$((SECS_PLACEHOLDER-SECS_PLACEHOLDER/2))"; DUMPPART=$(echo "$DUMPPART" | sed "s/SECS_PLACEHOLDER/$SECS/g"); fi
     ssh n810 "chmod +x $RBIN; DISPLAY=:0.0 $RBIN $RROM > $RBIN.log 2>&1 & EP=\$!; $DUMPPART; kill -0 \$EP 2>/dev/null && echo ALIVE > $RBIN.status || echo DEAD > $RBIN.status; dd if=/dev/fb0 bs=1600 count=480 of=$RBIN.fb 2>/dev/null; kill \$EP 2>/dev/null; echo done" \
         || { echo "n810-run: device command failed" >&2; exit 3; }
 fi
@@ -90,6 +97,10 @@ scp -q "n810:$RBIN.log" "$OUT.log" || exit 3
 for T in $RDUMPS; do
     scp -q "n810:$RBIN.t$T.fb" "$OUT.t$T.raw" || exit 3
 done
+# Fold all /proc snapshots into one evidence file and pull it (may be empty
+# if the process died before any sample — that itself is evidence).
+ssh n810 "cat $RBIN.fd.t* $RBIN.fd.mid > $RBIN.fd 2>/dev/null" 2>/dev/null
+scp -q "n810:$RBIN.fd" "$OUT.fd" 2>/dev/null || true
 STATUS=$(ssh n810 "cat $RBIN.status 2>/dev/null")
 
 # Decode RGB565 -> PNG (PIL preferred, PPM fallback) - final dump + any --dump-at dumps

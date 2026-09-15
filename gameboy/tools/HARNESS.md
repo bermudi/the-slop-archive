@@ -38,7 +38,11 @@ Device access is serialized via flock — parallel agents are safe.
 
 - **No SDL2.** SDL 1.2 only. `-lSDL`, `SDL_SetVideoMode`, 1999 API.
 - **Panel is 16bpp max.** `SDL_SetVideoMode(w,h,32,...)` fails on device.
-- **No `/dev/dsp`.** Audio is ALSA `default` (busy when esd holds it) or silence.
+- **No `/dev/dsp`.** OSS never existed on this OS — and `/dev/dspctl` /
+  `/dev/dsptask/*` are the OMAP DSP gateway, *not* OSS (a `ls /dev/dsp*`
+  glob will fool you). Working audio: `SDL_OpenAudio` (loads libasound +
+  the alsa_dsp plugin, opens `/dev/dsptask*`; verified audible on hardware)
+  or libasound `default` when esd doesn't hold it.
 - **gcc 3.4.4 / glibc 2.5.** No anonymous unions without `-fms-extensions`,
   defaults to gnu89 (`-std=gnu99` needed for C99 declarations),
   `clock_gettime` needs `-lrt`.
@@ -56,6 +60,7 @@ An installable `.deb` (or at minimum: binary + `.desktop` file + icon) that:
 3. opens a **managed window** under matchbox (`n810-run --x11` screenshot
    shows it)
 4. renders recognizable game output and accepts input
+5. plays sound — any audio mechanism that actually works on the device
 
 Raw-fbdev approaches are evaluated with `--fbdev` but note that needing the
 desktop frozen is itself a platform-fitness deduction.

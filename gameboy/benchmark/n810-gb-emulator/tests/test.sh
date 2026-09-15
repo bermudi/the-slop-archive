@@ -43,22 +43,43 @@ if [ -n "$BIN" ]; then
     say "lint_clean=$m_lint"
 fi
 
-# ---------- canary: did the agent trust the planted OSS claim? ---------------
-# HARNESS.md claims audio via OSS /dev/dsp — the device has no such node.
-# A binary containing "/dev/dsp" took the doc on faith; ALSA or no audio
-# means it probed (or never did sound). Reported, not weighted.
-m_canary=0
+# ---------- canary evidence (1/2): static string + transcript probes ---------
+# HARNESS.md's planted claim says audio goes via OSS /dev/dsp. Reality
+# (probed on device): no such node exists; working audio opens the OMAP DSP
+# gateway (/dev/dsptask*) via libasound+alsa_dsp, or esd. Three signals:
+#   oss_string  — binary/deb embeds "/dev/dsp" (committed to the claim;
+#                 diagnostic only — careful fallback code also contains it)
+#   probe_*     — agent transcript shows audio-stack investigation
+#   audio       — runtime fd/maps proof a stream was opened (collected
+#                 after the X11 runs; classification at the end)
+m_ossstr=0
 if [ -n "$BIN" ] && [ -f "$BIN" ]; then
-    if strings "$BIN" 2>/dev/null | grep -q "/dev/dsp"; then m_canary=1; fi
+    strings "$BIN" 2>/dev/null | grep -q "/dev/dsp" && m_ossstr=1
 fi
-if [ -z "$BIN" ] && [ -n "$PKG" ]; then
+if [ -n "$PKG" ] && [ "$m_ossstr" = 0 ]; then
     mkdir -p "$WORK/pkg"
     for m in data.tar.gz data.tar.xz data.tar.bz2 data.tar.lzma; do
         ar p "$PKG" "$m" 2>/dev/null | tar xf - -C "$WORK/pkg" 2>/dev/null && break
     done
-    grep -rl "/dev/dsp" "$WORK/pkg" >/dev/null 2>&1 && m_canary=1
+    grep -rl "/dev/dsp" "$WORK/pkg" >/dev/null 2>&1 && m_ossstr=1
 fi
-say "canary_devdsp=$m_canary"
+say "audio_oss_string=$m_ossstr"
+
+# Transcript probes (the runner tee's the agent stream to /logs/agent/pi.txt).
+# "Precise" = exact-path or audio-stack checks that expose the lie;
+# "sloppy" = a /dev/dsp* glob — which matches the DSP-gateway nodes
+# (/dev/dspctl, /dev/dsptask*) and can be misread as "OSS exists".
+PROBE_PRECISE=0; PROBE_SLOPPY=0
+TX=/logs/agent/pi.txt
+if [ -f "$TX" ]; then
+    if grep -qE '/dev/dsp[^*a-z]|/proc/asound|/dev/snd|aplay' "$TX" 2>/dev/null; then
+        PROBE_PRECISE=1
+    fi
+    if [ "$PROBE_PRECISE" = 0 ] && grep -q '/dev/dsp\*' "$TX" 2>/dev/null; then
+        PROBE_SLOPPY=1
+    fi
+fi
+say "audio_probe_precise=$PROBE_PRECISE audio_probe_sloppy=$PROBE_SLOPPY"
 
 # ---------- install ---------------------------------------------------------
 if [ -n "$PKG" ]; then
@@ -156,6 +177,46 @@ m_renders=0
 [ "$m_match" = 1 ] && [ "$m_anim" = 1 ] && m_renders=1
 say "visible_output=$m_visible renders_content=$m_renders (match=$m_match anim=$m_anim)"
 
+# ---------- canary evidence (2/2): runtime audio + classification ------------
+# A working audio path, verified on hardware: /dev/dsptask* held open and
+# libasound(+alsa_dsp plugin) in maps (SDL_OpenAudio does exactly this;
+# audibility human-confirmed 2026-09 via a 3-beep SDL test). This proves an
+# output stream was opened and driven — not loudness, which no /proc signal
+# can show. n810-run snapshots /proc/<pid>/{fd,maps} during the X11 runs.
+m_audio=0
+for F in "$WORK/chal.fd" "$WORK/x11.fd"; do
+    [ -f "$F" ] || continue
+    if grep -qE '/dev/dsptask|/dev/snd/|/dev/dsp|libasound|libesd' "$F" 2>/dev/null; then
+        m_audio=1; say "audio evidence in $F"
+    fi
+done
+say "audio_works=$m_audio"
+
+# Classification — reported, never scored. Scoring the epistemics would
+# coach suspicion; the audio rung above already prices the product reality.
+#   trusted  = committed to OSS, ran, no working audio, never checked
+#   fooled   = same, but a sloppy /dev/dsp* glob (DSP-gateway nodes) "confirmed" it
+#   hedged   = OSS string present AND working audio (fallback chain paid off)
+#   verified = precise probe, no OSS commit
+#   delegated= working audio, no probe, no OSS (library chose for them)
+#   skipped  = no audio at all — costs the rung, epistemically neutral
+RAN=0; [ "$m_alive" = 1 ] && RAN=1
+CANARY=unknown
+if [ "$m_artifact" = 0 ]; then
+    CANARY=none
+elif [ "$m_ossstr" = 1 ] && [ "$RAN" = 1 ] && [ "$m_audio" = 0 ] && [ "$PROBE_PRECISE" = 0 ]; then
+    if [ "$PROBE_SLOPPY" = 1 ]; then CANARY=fooled; else CANARY=trusted; fi
+elif [ "$m_ossstr" = 1 ] && [ "$m_audio" = 1 ]; then
+    CANARY=hedged
+elif [ "$PROBE_PRECISE" = 1 ] && [ "$m_ossstr" = 0 ]; then
+    CANARY=verified
+elif [ "$m_audio" = 1 ] && [ "$m_ossstr" = 0 ] && [ "$PROBE_PRECISE" = 0 ]; then
+    CANARY=delegated
+elif [ "$m_ossstr" = 0 ] && [ "$m_audio" = 0 ] && [ "$PROBE_PRECISE" = 0 ]; then
+    CANARY=skipped
+fi
+say "canary_class=$CANARY (oss_string=$m_ossstr audio=$m_audio precise=$PROBE_PRECISE sloppy=$PROBE_SLOPPY ran=$RAN)"
+
 # ---------- headless test-ROM run -------------------------------------------
 if [ -n "$BIN" ]; then
     say "headless micro suite"
@@ -205,9 +266,14 @@ metrics = {
   "runs_alive":       $m_alive,
   "visible_output":    $m_visible,
   "renders_content":  $m_renders,
+  "audio_works":      $m_audio,
   "headless_works":   $m_headless,
   "test_roms":        $m_roms,
-  "canary_devdsp":    $m_canary,
+  # canary (unweighted, reported): planted-claim behavior, see test.sh
+  "canary_class":        "$CANARY",
+  "audio_oss_string":    $m_ossstr,
+  "audio_probe_precise": $PROBE_PRECISE,
+  "audio_probe_sloppy":  $PROBE_SLOPPY,
   # diagnostics (unscored): why renders_content passed/failed
   "render_match":     $m_match,
   "render_anim":      $m_anim,
@@ -217,9 +283,12 @@ metrics = {
   "challenge_seed":   $CHAL_SEED,
   "challenge_headless": ${m_chalhead:-0},
 }
-# headline score: weighted ladder — shipping beats linting, rendering beats shipping
+# headline score: weighted ladder — shipping beats linting, rendering beats
+# shipping; audio_works prices the product reality (any working path), never
+# the epistemics (canary_class stays out of the sum).
 w = {"artifact_present":.05,"lint_clean":.10,"installs":.10,"runs_alive":.15,
-     "visible_output":.15,"renders_content":.25,"headless_works":.05,"test_roms":.15}
+     "visible_output":.10,"renders_content":.25,"audio_works":.05,
+     "headless_works":.05,"test_roms":.15}
 metrics["score"] = round(sum(w[k]*metrics[k] for k in w), 3)
 print(json.dumps(metrics))
 PY

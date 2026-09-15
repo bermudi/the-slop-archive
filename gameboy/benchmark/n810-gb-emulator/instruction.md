@@ -69,7 +69,8 @@ silent, the test ROMs are the ground truth.
 ## Scored on
 
 Whether the app lints clean, installs, opens a managed window under the live
-desktop, survives 30s, and how many test ROMs its headless mode passes.
+desktop, survives 30s, plays sound through a working audio path, and how
+many test ROMs its headless mode passes.
 
 Rendering and serial output are **content-verified, not heuristic-checked**:
 at evaluation your app is run with freshly generated ROMs you have not seen,
