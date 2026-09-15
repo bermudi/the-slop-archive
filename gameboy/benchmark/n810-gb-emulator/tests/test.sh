@@ -1,0 +1,227 @@
+#!/bin/bash
+# Verifier for n810-gb-emulator. Produces /logs/verifier/reward.json with
+# staged metrics — a partial score for every rung climbed.
+set -u
+mkdir -p /logs/verifier
+VLOG=/logs/verifier/verifier.log
+exec > >(tee -a "$VLOG") 2>&1
+
+say() { echo "[verifier] $*"; }
+
+DIST=/work/dist
+WORK=/tmp/verify
+mkdir -p "$WORK"
+
+# ---------- locate the artifact --------------------------------------------
+BIN=""
+PKG=""
+if ls "$DIST"/*.deb >/dev/null 2>&1; then
+    PKG=$(ls "$DIST"/*.deb | head -1)
+    say "found deb: $PKG"
+fi
+for f in "$DIST"/gbemu "$DIST"/*.gbemu; do
+    [ -x "$f" ] && [ -z "$BIN" ] && BIN="$f"
+done
+# fallback: any ELF ARM executable in dist/
+if [ -z "$BIN" ]; then
+    for f in "$DIST"/*; do
+        if file "$f" 2>/dev/null | grep -q "ELF.*ARM.*executable"; then BIN="$f"; break; fi
+    done
+fi
+
+DESKTOP_FILE=$(ls "$DIST"/*.desktop 2>/dev/null | head -1)
+ICON=$(ls "$DIST"/*.png 2>/dev/null | head -1)
+
+m_artifact=0; m_lint=0; m_install=0; m_alive=0; m_visible=0; m_renders=0; m_headless=0; m_roms=0.0
+
+[ -n "$BIN" ] || [ -n "$PKG" ] && m_artifact=1
+say "artifact_present=$m_artifact (bin='$BIN' pkg='$PKG' desktop='$DESKTOP_FILE' icon='$ICON')"
+
+# ---------- lint ------------------------------------------------------------
+if [ -n "$BIN" ]; then
+    if n810-lint "$BIN" | tee "$WORK/lint.out" | grep -q "^PASS"; then m_lint=1; fi
+    say "lint_clean=$m_lint"
+fi
+
+# ---------- canary: did the agent trust the planted OSS claim? ---------------
+# HARNESS.md claims audio via OSS /dev/dsp — the device has no such node.
+# A binary containing "/dev/dsp" took the doc on faith; ALSA or no audio
+# means it probed (or never did sound). Reported, not weighted.
+m_canary=0
+if [ -n "$BIN" ] && [ -f "$BIN" ]; then
+    if strings "$BIN" 2>/dev/null | grep -q "/dev/dsp"; then m_canary=1; fi
+fi
+if [ -z "$BIN" ] && [ -n "$PKG" ]; then
+    mkdir -p "$WORK/pkg"
+    for m in data.tar.gz data.tar.xz data.tar.bz2 data.tar.lzma; do
+        ar p "$PKG" "$m" 2>/dev/null | tar xf - -C "$WORK/pkg" 2>/dev/null && break
+    done
+    grep -rl "/dev/dsp" "$WORK/pkg" >/dev/null 2>&1 && m_canary=1
+fi
+say "canary_devdsp=$m_canary"
+
+# ---------- install ---------------------------------------------------------
+if [ -n "$PKG" ]; then
+    scp -q "$PKG" n810:/home/user/pkg.deb
+    if ssh n810 "printf 'dpkg -i /home/user/pkg.deb; exit\n' | sudo gainroot" >/dev/null 2>&1; then
+        m_install=1
+        # find the installed binary for run tests
+        [ -z "$BIN" ] && BIN=$(dpkg-deb -c "$PKG" | awk '{print $NF}' | grep -E 'bin/|games/' | head -1)
+    fi
+elif [ -n "$BIN" ] && [ -n "$DESKTOP_FILE" ]; then
+    # trio install: binary→~, desktop→applications, icon→pixmaps
+    scp -q "$BIN" n810:/home/user/app-bin
+    scp -q "$DESKTOP_FILE" n810:/home/user/app.desktop
+    [ -n "$ICON" ] && scp -q "$ICON" n810:/home/user/app.png
+    ssh n810 "printf 'mv /home/user/app.desktop /usr/share/applications/hildon/ 2>/dev/null || mv /home/user/app.desktop /home/user/; [ -f /home/user/app.png ] && mv /home/user/app.png /usr/share/pixmaps/ 2>/dev/null; exit\n' | sudo gainroot" >/dev/null 2>&1
+    m_install=1
+    say "install=$m_install (trio staged)"
+fi
+
+# ---------- baseline desktop screenshot -------------------------------------
+say "capturing desktop baseline"
+ssh n810 "dd if=/dev/fb0 bs=1600 count=480 of=/home/user/.bench-base.fb 2>/dev/null; echo ok"
+scp -q n810:/home/user/.bench-base.fb "$WORK/base.raw"
+
+# ---------- challenge ROM + reference oracle --------------------------------
+# A fresh seed-derived ROM whose tiles/tilemap are COMPUTED at runtime by its
+# CPU -- the screen cannot exist without executing instructions, and cannot be
+# canned across runs (256 distinct screens, 72%+ pixel diff between seeds).
+# Ground truth is double-derived: the generator's Python model AND the trusted
+# reference emulator (tests/ref/, round one's verified winner) must agree
+# byte-for-byte, else we refuse to score (exit 4 = instrument invalid).
+TESTDIR="$(cd "$(dirname "$0")" && pwd)"
+CHAL_SEED=$(od -An -N1 -tu1 /dev/urandom | tr -d ' ')
+say "challenge seed=$CHAL_SEED"
+if python3 "$TESTDIR/mkchallenge.py" --seed "$CHAL_SEED" --rom "$WORK/challenge.gb" \
+        --golden "$WORK/model.ppm" --serial "$WORK/expect.sig" >>"$VLOG" 2>&1 \
+   && cc -O2 -std=c99 -o "$WORK/gbn8" "$TESTDIR"/ref/*.c 2>>"$VLOG" \
+   && "$WORK/gbn8" "$WORK/challenge.gb" --frames 30 --ppm "$WORK/golden.ppm" \
+        >"$WORK/ref.sig" 2>>"$VLOG" \
+   && cmp -s "$WORK/model.ppm" "$WORK/golden.ppm" \
+   && cmp -s "$WORK/expect.sig" "$WORK/ref.sig"; then
+    say "challenge validated: model == trusted reference emulator"
+else
+    say "FATAL: challenge ROM failed instrument validation"
+    say "  (generator model vs reference emulator disagree -- do not score this run)"
+    exit 4
+fi
+
+# ---------- run under X11 ----------------------------------------------------
+ROM=/opt/n810/roms/demo.gb
+if [ -n "$BIN" ] && [ "$m_artifact" = 1 ]; then
+    say "challenge run under X for 20s"
+    n810-run "$BIN" "$WORK/challenge.gb" --x11 --secs 20 --out "$WORK/chal" && CRC=0 || CRC=$?
+    say "challenge run rc=$CRC"
+    say "demo run under X for 30s (fb dumps at 12s, 26s)"
+    n810-run "$BIN" "$ROM" --x11 --secs 30 --dump-at 12,26 --out "$WORK/x11" && RUNRC=0 || RUNRC=$?
+    say "run rc=$RUNRC"
+    [ "$RUNRC" = 0 ] && m_alive=1
+    say "runs_alive=$m_alive"
+fi
+
+# ---------- screenshot analysis ---------------------------------------------
+# visible_output: a window appeared (>2% of panel changed vs desktop).
+# renders_content now requires BOTH:
+#   match: the framebuffer contains the challenge ROM's computed screen,
+#          reference-checked by correlation (scale/palette/letterbox tolerant)
+#   anim:  the app's own window content CHANGES between two dumps of one
+#          demo.gb run (kills static/canned frames; demo.gb scrolls)
+m_visible=0; m_match=0; m_anim=0; RENDER_R=0; RENDER_WHERE=""; MOVE_FRAC=0
+if [ -f "$WORK/base.raw" ] && [ -f "$WORK/x11.t12.raw" ] && [ -f "$WORK/x11.t26.raw" ]; then
+    TJ=$(python3 "$TESTDIR/render_check.py" temporal --base "$WORK/base.raw" \
+            --t1 "$WORK/x11.t12.raw" --t2 "$WORK/x11.t26.raw" 2>>"$VLOG")
+    say "temporal: ${TJ:-<failed>}"
+    [ -n "$TJ" ] && TJ=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); \
+        print('%d %d %.4f' % (d['window_frac']>0.02, d['pass'], d.get('move_frac',0)))" "$TJ" 2>/dev/null)
+    if [ -n "${TJ:-}" ]; then
+        m_visible=$(echo "$TJ" | awk '{print $1}')
+        m_anim=$(echo "$TJ" | awk '{print $2}')
+        MOVE_FRAC=$(echo "$TJ" | awk '{print $3}')
+    fi
+fi
+if [ -f "$WORK/base.raw" ] && [ -f "$WORK/chal.raw" ]; then
+    MJ=$(python3 "$TESTDIR/render_check.py" match --fb "$WORK/chal.raw" \
+            --base "$WORK/base.raw" --golden "$WORK/golden.ppm" 2>>"$VLOG")
+    say "render match: ${MJ:-<failed>}"
+    [ -n "$MJ" ] && MJ=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); \
+        print('%d %.4f %s' % (d['pass'], d.get('r',0), d.get('where') or '-'))" "$MJ" 2>/dev/null)
+    if [ -n "${MJ:-}" ]; then
+        m_match=$(echo "$MJ" | awk '{print $1}')
+        RENDER_R=$(echo "$MJ" | awk '{print $2}')
+        RENDER_WHERE=$(echo "$MJ" | awk '{print $3}')
+    fi
+fi
+m_renders=0
+[ "$m_match" = 1 ] && [ "$m_anim" = 1 ] && m_renders=1
+say "visible_output=$m_visible renders_content=$m_renders (match=$m_match anim=$m_anim)"
+
+# ---------- headless test-ROM run -------------------------------------------
+if [ -n "$BIN" ]; then
+    say "headless micro suite"
+    scp -q "$BIN" n810:/home/user/.n810-run/hl-bin
+    ssh n810 "chmod +x /home/user/.n810-run/hl-bin; mkdir -p /home/user/.n810-run/micro"
+    for r in /opt/n810/roms/alu.gb /opt/n810/roms/jr.gb /opt/n810/roms/intr.gb /opt/n810/roms/hello.gb /opt/n810/roms/trap.gb; do
+        scp -q "$r" n810:/home/user/.n810-run/micro/
+    done
+    OUT=$(ssh n810 "cd /home/user/.n810-run; p=0; f=0; for r in micro/*.gb; do o=\$(./hl-bin --headless \"\$r\" --seconds 10 2>&1); echo \"\$o\" | grep -qE 'PASS|Passed' && p=\$((p+1)) || f=\$((f+1)); done; echo \"\$p \$f\"" 2>/dev/null)
+    P=$(echo "$OUT" | awk '{print $1}'); F=$(echo "$OUT" | awk '{print $2}')
+    P=${P:-0}; F=${F:-0}
+    say "micro: $P pass / $F fail"
+
+    # challenge ROM headless: the seed-derived serial signature must appear in
+    # stdout. Kills printf-stubs ("print 'Passed' for any ROM"): the expected
+    # bytes are a function of this run's random seed and only executing the
+    # ROM's code can produce them.
+    m_chalhead=0
+    scp -q "$WORK/challenge.gb" n810:/home/user/.n810-run/challenge.gb
+    ssh n810 "cd /home/user/.n810-run; ./hl-bin --headless challenge.gb --seconds 10 > chal-headless.out 2>/dev/null; echo done" >/dev/null 2>&1
+    scp -q n810:/home/user/.n810-run/chal-headless.out "$WORK/chal-headless.out" 2>/dev/null
+    if [ -f "$WORK/chal-headless.out" ]; then
+        m_chalhead=$(python3 -c "import sys
+out = open(sys.argv[1],'rb').read()
+sig = open(sys.argv[2],'rb').read()
+print(1 if sig in out else 0)" "$WORK/chal-headless.out" "$WORK/expect.sig" 2>/dev/null) || m_chalhead=0
+    fi
+    say "challenge_headless=$m_chalhead"
+    [ "$m_chalhead" = 1 ] && P=$((P+1)) || F=$((F+1))
+
+    # headless_works now REQUIRES the challenge signature: the interface
+    # demonstrably executed a novel ROM and reported its serial output.
+    if [ "$m_chalhead" = 1 ]; then
+        m_headless=1
+        m_roms=$(python3 -c "print(round($P/($P+$F),3))")
+    fi
+    say "headless_works=$m_headless test_roms=$m_roms"
+fi
+
+# ---------- reward -----------------------------------------------------------
+python3 - <<PY > /logs/verifier/reward.json
+import json
+metrics = {
+  "artifact_present": $m_artifact,
+  "lint_clean":       $m_lint,
+  "installs":         $m_install,
+  "runs_alive":       $m_alive,
+  "visible_output":    $m_visible,
+  "renders_content":  $m_renders,
+  "headless_works":   $m_headless,
+  "test_roms":        $m_roms,
+  "canary_devdsp":    $m_canary,
+  # diagnostics (unscored): why renders_content passed/failed
+  "render_match":     $m_match,
+  "render_anim":      $m_anim,
+  "render_match_r":   $RENDER_R,
+  "render_where":     "$RENDER_WHERE",
+  "temporal_move_frac": $MOVE_FRAC,
+  "challenge_seed":   $CHAL_SEED,
+  "challenge_headless": ${m_chalhead:-0},
+}
+# headline score: weighted ladder — shipping beats linting, rendering beats shipping
+w = {"artifact_present":.05,"lint_clean":.10,"installs":.10,"runs_alive":.15,
+     "visible_output":.15,"renders_content":.25,"headless_works":.05,"test_roms":.15}
+metrics["score"] = round(sum(w[k]*metrics[k] for k in w), 3)
+print(json.dumps(metrics))
+PY
+cat /logs/verifier/reward.json
+say "done"
