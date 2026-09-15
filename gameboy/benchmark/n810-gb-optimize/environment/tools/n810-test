@@ -1,0 +1,41 @@
+#!/bin/bash
+# n810-test — run headless test ROMs against a core on the device.
+#
+# Drives the standard suite conventions:
+#   micro   — self-authored serial "PASS" protocol
+#   blargg  — serial text: "Passed" / "Passed all tests" / "Done" (fail prints "Failed")
+#   mooneye — register state at the `ld b,b` breakpoint (B=3 C=5 D=8 E=13 H=21 L=34 = pass)
+#
+# No timeout on BusyBox, so --secs bounds emulation internally (the binary's
+# own --seconds flag or equivalent); adjust RUN wrapper per submission.
+#
+# Usage: n810-test <device-path-to-binary> <rom-dir-on-device> [--secs N]
+#   e.g. n810-test ~/bench/gb810/build/bin/gb810-test ~/bench/gb810/test/roms/micro
+set -u
+
+BIN="${1:?usage: n810-test <device-binary> <device-rom-dir> [--secs N]}"
+ROMDIR="${2:?missing rom dir}"
+SECS="${4:-30}"
+[ "${3:-}" = "--secs" ] && SECS="${4:-30}"
+
+# Serialize on the device itself — works across containers, unlike local flock.
+i=0
+until ssh n810 "mkdir /home/user/.bench-lock" 2>/dev/null; do
+    i=$((i+1)); [ $i -gt 120 ] && { echo "device lock timeout" >&2; exit 3; }
+    sleep 5
+done
+trap 'ssh n810 "rmdir /home/user/.bench-lock" 2>/dev/null' EXIT
+
+ssh n810 "
+pass=0; fail=0
+for r in $ROMDIR/*.gb; do
+    out=\$($BIN --headless --seconds $SECS \"\$r\" 2>&1)
+    name=\$(basename \"\$r\")
+    if echo \"\$out\" | grep -qE 'Passed|PASS|Done'; then
+        echo \"PASS  \$name\"; pass=\$((pass+1))
+    else
+        echo \"FAIL  \$name  \$(echo \"\$out\" | tail -1)\"; fail=\$((fail+1))
+    fi
+done
+echo \"---\"; echo \"total: \$pass pass / \$fail fail\"
+" 2>&1

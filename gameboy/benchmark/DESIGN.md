@@ -117,21 +117,57 @@ implementation quality and rewards whoever wrote the worst baseline. Instead:
   wall-second across a ROM set, plus %CPU at locked 59.7fps. Only
   correctness-passing workloads count (no frame-skip cheats).
 
-**Implementation status (done):**
+**Implementation status (done; measurement hardened post-review):**
 - `benchmark/n810-gb-optimize/` — full task. Baseline = gb4n810 tree with
   device-gcc make targets + serial→stdout patch.
-- `bench.gb` (mkbench.py): fixed-workload ROM — scroll + 40 sprites +
-  one serial tick per vblank. Realized fps comes from ROM-paced ticks,
-  not self-report. Verified: 100 frames → 99 ticks.
-- `n810-perf` tool: `--headless` wall-times N frames; `--app` reports
-  realized fps + %CPU from /proc.
-- **Measured baseline on device: headless 41.1 fps (0.69×), app 34.0 fps
-  realized, 75% CPU** — the app path costs ~7fps vs core, and 25% idle
-  CPU means pacing/vsync waits, not just raw speed. Baked into the
-  verifier as BASE_APP/BASE_EMU; improvement scored baseline→realtime,
-  so "did nothing" earns only the 0.30 correctness term.
-- Scoring: `0.30*correctness + (0.50*app_imp + 0.20*emu_imp)` — speed
-  credit gated on test_roms≥0.8 AND still-renders.
+- **Stream-verified measurement (v2).** The v1 tick was a constant `*` —
+  every speed number bottomed out in bytes the binary under test prints,
+  so a timer thread scored full fps and headless fps was literally
+  `--frames/elapsed`. Now:
+  - `tests/mkbench.py` (verifier-side, hidden) generates **private bench
+    variants per scoring run** (random seed). Every tick byte is
+    `LCG_n(seed) ^ DIV_at_vblank_n`: the LCG proves the ROM's code
+    executed (seed never seen by the agent), the DIV read pins frames to
+    70224 cycles — a frame-halver or overclocked-PPU build diverges from
+    golden within ~2 frames (validated on patched reference builds:
+    228-dots/line → 0 matched; 451-dots/line ≈ 1% timing error → 1
+    matched; honest build → full match; `*`-ticker → 0; wrong variant → 0).
+  - Golden streams come from the vendored reference core (`tests/ref` =
+    unmodified baseline), guarded before scoring by an independent model
+    (`environment/tools/stream_match.py guard`: DIV slope must be
+    18.31 counts/frame ≈ 274.3125 mod 256) — a broken instrument refuses
+    to score (exit 4). Matching tolerates ±4 counts (1024 T-cycles) on
+    the DIV component only: absorbs instruction-batching jitter in honest
+    optimized builds; any persistent frame-length error > ~0.3%
+    accumulates past it.
+  - `n810-perf` v2: fps = matched-prefix/elapsed for both `--headless`
+    and `--app` (min across 2 private variants); without `--golden` it
+    labels its numbers UNVERIFIED (dev mode). App runs take three
+    in-run framebuffer dumps; `still_renders` now requires non-white AND
+    pairwise-different dumps (bench.gb rewrites a tile every frame, so a
+    frozen splash fails).
+  - The correctness gate additionally requires a **fresh-seed challenge
+    ROM signature** (Track A's `mkchallenge.py`, vendored): canned
+    "PASS" printers no longer open the gate, and without the signature
+    the 0.30 correctness term pays zero too (`verified_roms`).
+  - Scored profiles (simulated): honest full speed 0.999; unchanged
+    baseline 0.257; fake `*`-ticker with canned gate → **0.000**;
+    canned-PASS-only → **0.000**; frame-halver → correctness term only.
+- **Measured baseline on device: headless 41.1 fps (0.69×), app ≈ 30.9
+  fps realized (v1's 34.0 counted ticks over a ~33s log against a 30s
+  window; v2 measures the whole-life window), 75% CPU.** Baked in as
+  default anchors; the verifier re-measures both anchors in-session from
+  frozen baseline binaries if staged at `/opt/n810/anchor/` (kills device
+  drift across a campaign — stage them).
+- Scoring: `0.30*verified_roms + (0.50*app_imp + 0.20*emu_imp)` — speed
+  credit gated on test_roms≥0.8 AND still-renders AND challenge signature.
+- **Residual, stated:** an agent could reverse-engineer a scoring variant
+  handed to its binary and reimplement the byte generator in C. That is
+  targeted fraud, not laziness — it must also survive two fresh variants
+  per run, the render-dump checks, and source review (dynarec-ban review
+  already exists). Publishing the matcher (`stream_match.py`) while
+  keeping seeds/generator private follows the "secret inputs, public
+  contract" rule.
 
 ### Track C — debug a frozen failure (cheap, optional)
 

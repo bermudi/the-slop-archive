@@ -1,0 +1,40 @@
+schema_version = "1.4"
+
+[task]
+name = "local/n810-gb-optimize"
+version = "1.0.0"
+description = "Optimize a working Game Boy emulator to full speed on a physical Nokia N810 without breaking correctness"
+authors = [{ name = "daniel" }]
+keywords = ["emulator", "arm", "embedded", "optimization", "hardware"]
+
+[metadata]
+category = "performance-engineering"
+difficulty_explanation = "Requires profiling on real hardware, targeted optimization, and correctness regression control; shared baseline isolates optimization skill"
+
+[verifier]
+# v2: stream-verified measurement runs 2 private bench variants headless
+# (~2x45s) + 2 app runs (~2x35s) + the 7-ROM gate (~11min at baseline
+# speed) + challenge ROM + reference build. 900s could not hold the gate
+# alone even at v1; 2400s gives headroom for slow-but-correct builds.
+timeout_sec = 2400.0
+
+[agent]
+timeout_sec = 5400.0
+# Agent phase: the agent process runs INSIDE this container, so it needs
+# its model API. LAN + api.z.ai only — no source fetch during the run.
+network_mode = "allowlist"
+allowed_hosts = ["192.168.0.0/24", "api.z.ai"]
+
+[environment]
+# Baseline applies during agent SETUP (harbor installs the agent CLI in the
+# container: apt, nvm->nodejs.org, npm registry). Nothing else runs then.
+network_mode = "allowlist"
+allowed_hosts = ["192.168.0.0/24", "api.z.ai", "deb.debian.org", "security.debian.org", "raw.githubusercontent.com", "github.com", "codeload.github.com", "objects.githubusercontent.com", "nodejs.org", "registry.npmjs.org"]
+build_timeout_sec = 600.0
+os = "linux"
+cpus = 2
+memory_mb = 2048
+storage_mb = 10240
+
+# No [verifier.environment] — verifier shares the agent container. A separate
+# verifier env would need its own environment definition under tests/.
