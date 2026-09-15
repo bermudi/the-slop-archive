@@ -1,0 +1,17 @@
+# Scored correctness suite (v3) — graded BY NAME against baseline_manifest.json.
+# Columns (TAB-separated): file, mode, want
+#   blargg : pass iff the want status-word appears in serial output AND the
+#            process exits 0 (gb810/test/NOTES.md §1.4: final word Passed/Done).
+#
+# trap.gb is deliberately NOT in this list: it speaks the mooneye exit protocol
+# (load Fibonacci registers, ld b,b breakpoint, spin forever — no serial
+# signature ever; authored to test gb810's debugger hook, see NOTES §2 and
+# test/micro/make.py t_trap). A black-box serial runner cannot grade it, so it
+# ran as a permanently-failing denominator slot in v2. It now runs as a
+# silent-clean-exit DIAGNOSTIC only (suite_run.sh emits it after the suite).
+alu.gb	blargg	PASS
+jr.gb	blargg	PASS
+intr.gb	blargg	PASS
+hello.gb	blargg	PASS
+01-special.gb	blargg	Passed
+06-ld r,r.gb	blargg	Passed

@@ -12,10 +12,10 @@ category = "performance-engineering"
 difficulty_explanation = "Requires profiling on real hardware, targeted optimization, and correctness regression control; shared baseline isolates optimization skill"
 
 [verifier]
-# v2: stream-verified measurement runs 2 private bench variants headless
-# (~2x45s) + 2 app runs (~2x35s) + the 7-ROM gate (~11min at baseline
-# speed) + challenge ROM + reference build. 900s could not hold the gate
-# alone even at v1; 2400s gives headroom for slow-but-correct builds.
+# v3: stream-verified measurement runs 2 private bench variants headless
+# (~2x45s) + 2 app runs (~2x35s) + the 6-ROM suite at a 1200-frame cap
+# (~3min at baseline speed) + challenge ROM + reference build. 2400s keeps
+# headroom for slow-but-correct builds.
 timeout_sec = 2400.0
 
 [agent]

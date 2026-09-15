@@ -1,0 +1,12 @@
+# Scored headless suite (v3) — micro ROMs, graded by name, mode-aware.
+# Columns (TAB-separated): file, mode, want
+#   blargg : pass iff the want status-word appears in serial output AND the
+#            process exits 0 (gb810/test/NOTES.md §1.4).
+# The challenge-ROM signature is counted in test_roms separately (test.sh),
+# as in v2. trap.gb is DIAGNOSTIC-ONLY: mooneye ld b,b exit protocol, no
+# serial signature ever — a black-box serial runner cannot grade it (it was
+# a permanently-failing denominator slot in v2).
+hello.gb	blargg	PASS
+jr.gb	blargg	PASS
+alu.gb	blargg	PASS
+intr.gb	blargg	PASS
