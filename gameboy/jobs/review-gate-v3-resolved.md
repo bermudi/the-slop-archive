@@ -40,6 +40,10 @@ chattr-frozen). Confirmed on device post-fix: 6/6 + `#diag trap.gb 1`
 under the new runner — frozen manifest remains valid (ref emits nothing
 on stderr, so the narrowed predicate changes nothing for honest builds).
 
+Verified-correct per reviewer (no action): score.py arithmetic + all 9
+selftest vectors (hand-recomputed), rpartition parsing, Track A weight
+sum = 1.00, mode-aware semantics vs NOTES.md.
+
 ## Round 2 (commit 8dacfac verification) and round 3 (commit 5dca6b0)
 
 Round 2 closed findings 1-4, 6, 7 and surfaced:
