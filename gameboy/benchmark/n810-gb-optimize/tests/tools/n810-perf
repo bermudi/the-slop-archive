@@ -1,0 +1,152 @@
+#!/bin/bash
+# n810-perf v2 — measure Game Boy emulator speed on the real N810 without
+# trusting the binary under test.
+#
+# v1 counted '*' bytes the binary printed; a timer thread printing '*' at
+# 16.7ms scored full fps with zero emulation. v2 scores only serial bytes
+# that match the expected bench.gb stream:
+#
+#   byte_n = LCG_n(seed) XOR DIV_at_vblank_n
+#
+# The LCG component proves the ROM's code executed (seed is private per
+# scoring run); the DIV component pins frames to 70224 cycles (frame-
+# shortening diverges within ~2 frames). Matching is prefix-based with
+# +-TOL tolerance on the DIV component only (absorbs batching jitter in
+# honest optimized builds). Expected streams come from the trusted
+# reference core — see tests/ in the benchmark tree.
+#
+# Without --golden this tool falls back to raw byte counting and labels
+# every number UNVERIFIED (dev use only: a fast number then proves
+# nothing more than "printed N bytes").
+#
+# Usage:
+#   n810-perf --headless <bin> [--frames N] [--bench B] \
+#             [--golden G --lcg L [--matcher M]]
+#   n810-perf --app <bin> [--secs N] [--bench B] \
+#             [--golden G --lcg L [--matcher M]]
+set -u
+
+SECS=30
+FRAMES=1800
+HBIN=""; ABIN=""
+BENCH="$(dirname "$0")/../roms/bench.gb"
+GOLDEN=""; LCG=""; MATCHER=""
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$SCRIPT_DIR/stream_match.py" ] && MATCHER="$SCRIPT_DIR/stream_match.py"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --headless) HBIN="$2"; shift 2 ;;
+        --app)      ABIN="$2"; shift 2 ;;
+        --secs)     SECS="$2"; shift 2 ;;
+        --frames)   FRAMES="$2"; shift 2 ;;
+        --bench)    BENCH="$2"; shift 2 ;;
+        --golden)   GOLDEN="$2"; shift 2 ;;
+        --lcg)      LCG="$2"; shift 2 ;;
+        --matcher)  MATCHER="$2"; shift 2 ;;
+        -*) echo "unknown flag $1" >&2; exit 2 ;;
+        *) echo "usage: n810-perf [--headless B] [--app B] ..." >&2; exit 2 ;;
+    esac
+done
+[ -n "$HBIN" ] || [ -n "$ABIN" ] || { echo "need --headless and/or --app" >&2; exit 2; }
+[ -f "$BENCH" ] || { echo "bench ROM not found: $BENCH" >&2; exit 2; }
+if [ -n "$GOLDEN" ] || [ -n "$LCG" ]; then
+    [ -f "$GOLDEN" ] && [ -f "$LCG" ] && [ -f "$MATCHER" ] || {
+        echo "--golden/--lcg need existing files and a matcher (--matcher)" >&2; exit 2; }
+fi
+
+matched_count() {  # $1 = serial log
+    if [ -n "$GOLDEN" ]; then
+        python3 "$MATCHER" match "$1" "$GOLDEN" "$LCG"
+    else
+        wc -c < "$1" | tr -d ' '
+    fi
+}
+
+i=0
+until ssh n810 "mkdir /home/user/.bench-lock" 2>/dev/null; do
+    i=$((i+1)); [ $i -gt 120 ] && { echo "device lock timeout" >&2; exit 3; }
+    sleep 5
+done
+trap 'ssh n810 "rmdir /home/user/.bench-lock" 2>/dev/null' EXIT
+
+ssh n810 "mkdir -p ~/.n810-run" || exit 3
+BENCHD=/home/user/.n810-run/bench.gb
+scp -q "$BENCH" "n810:$BENCHD" || exit 3
+
+# ---------- headless throughput ----------------------------------------------
+if [ -n "$HBIN" ]; then
+    H=/home/user/.n810-run/$(basename "$HBIN")
+    scp -q "$HBIN" "n810:$H" || exit 3
+    ssh n810 "chmod +x $H; S=\$(date +%s); $H $BENCHD --frames $FRAMES > $H.hlog 2>&1; E=\$(date +%s); echo \"\$S \$E\" > $H.htime" \
+        || { echo "headless run failed" >&2; exit 3; }
+    ST=$(ssh n810 "cat $H.htime")
+    scp -q "n810:$H.hlog" /tmp/n810-perf-hlog.$$ || exit 3
+    M=$(matched_count /tmp/n810-perf-hlog.$$)
+    rm -f /tmp/n810-perf-hlog.$$
+    S=$(echo "$ST" | awk '{print $1}'); E=$(echo "$ST" | awk '{print $2}')
+    TAG="UNVERIFIED — byte count, no golden given"
+    [ -n "$GOLDEN" ] && TAG="verified"
+    python3 -c "
+m=$M; e=max($E-$S,1); g=$([ -n "$GOLDEN" ] && echo 1 || echo 0)
+print(f'headless: {m} matched frames in {e}s = {m/e:.1f} fps ({m/e/59.7275:.2f}x realtime, $TAG)')
+print(f'          stream: matched {m} bytes against golden')" 2>/dev/null || \
+    echo "headless: measurement parse failed" >&2
+fi
+
+# ---------- app realized fps + %CPU + fb dumps --------------------------------
+if [ -n "$ABIN" ]; then
+    A=/home/user/.n810-run/$(basename "$ABIN")
+    scp -q "$ABIN" "n810:$A" || exit 3
+    D1=$((SECS / 3)); D2=$((SECS * 2 / 3)); D3=$((SECS * 9 / 10))
+    SC=/home/user/.n810-run/perf_app.sh
+    cat > /tmp/n810-perf-app.$$ <<EOS
+#!/bin/sh
+A=$A
+X=\$(pidof Xomap)
+[ -n "\$X" ] && kill -STOP \$X
+chmod +x \$A
+S=\$(date +%s)
+\$A $BENCHD > \$A.alog 2>&1 &
+EP=\$!
+sleep 2
+J1=\$(awk '{print \$14+\$15}' /proc/\$EP/stat 2>/dev/null || echo 0)
+sleep $((D1 - 2))
+dd if=/dev/fb0 of=\$A.fb1 2>/dev/null
+sleep $((D2 - D1))
+dd if=/dev/fb0 of=\$A.fb2 2>/dev/null
+sleep $((D3 - D2))
+dd if=/dev/fb0 of=\$A.fb3 2>/dev/null
+J2=\$(awk '{print \$14+\$15}' /proc/\$EP/stat 2>/dev/null || echo 0)
+sleep $((SECS - D3))
+E=\$(date +%s)
+kill -0 \$EP 2>/dev/null && echo ALIVE > \$A.status || echo DEAD > \$A.status
+kill \$EP 2>/dev/null
+[ -n "\$X" ] && kill -CONT \$X
+echo "\$S \$E \$J1 \$J2" > \$A.atime
+EOS
+    scp -q /tmp/n810-perf-app.$$ "n810:$SC" || { rm -f /tmp/n810-perf-app.$$; exit 3; }
+    rm -f /tmp/n810-perf-app.$$
+    ssh n810 "sudo gainroot sh $SC" || { echo "app run failed" >&2; exit 3; }
+    scp -q "n810:$A.alog" /tmp/n810-perf-alog.$$ || exit 3
+    AT=$(ssh n810 "cat $A.atime 2>/dev/null" || echo "0 0 0 0")
+    STATUS=$(ssh n810 "cat $A.status 2>/dev/null" || echo DEAD)
+    M=$(matched_count /tmp/n810-perf-alog.$$)
+    rm -f /tmp/n810-perf-alog.$$
+    S=$(echo "$AT" | awk '{print $1}'); E=$(echo "$AT" | awk '{print $2}')
+    J1=$(echo "$AT" | awk '{print $3}'); J2=$(echo "$AT" | awk '{print $4}')
+    TAG="UNVERIFIED — byte count, no golden given"
+    [ -n "$GOLDEN" ] && TAG="verified"
+    python3 -c "
+m=$M; s=$S; e=$E; wall=max(e-s,1)
+print(f'app: {m} matched frames in {wall}s = {m/wall:.1f} fps realized (59.73 target, $TAG)')
+if $J2 > $J1:
+    print(f'     cpu: {($J2-$J1)/($E-$S+1)*100:.0f}% of one core during run')
+print(f'     proc: $STATUS')" 2>/dev/null || \
+    echo "app: measurement parse failed" >&2
+    for k in 1 2 3; do
+        scp -q "n810:$A.fb$k" /tmp/n810-perf.fb$k 2>/dev/null || echo "     fb dump $k: FAILED" >&2
+    done
+    ssh n810 "rm -f $A.fb1 $A.fb2 $A.fb3 $A.alog $A.atime $A.status $SC" 2>/dev/null
+    echo "     fb dumps: /tmp/n810-perf.fb1 /tmp/n810-perf.fb2 /tmp/n810-perf.fb3"
+fi

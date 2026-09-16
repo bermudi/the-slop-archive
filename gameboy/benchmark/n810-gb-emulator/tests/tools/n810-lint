@@ -1,0 +1,83 @@
+#!/bin/bash
+# n810-lint — static check: can this binary even run on a Nokia N810?
+#
+# Catches the failure classes this benchmark actually observed on hardware:
+#   - v6K+ instructions (ldrex*/strex*/clrex/dmb/dsb/isb) that SIGILL on the
+#     OMAP2420's pre-v6K ARM1136 — QEMU will NOT catch these (verified:
+#     qemu-arm -cpu arm1136 executes ldrexb fine; real silicon SIGILLs)
+#   - linkage against libraries that do not exist on Diablo (SDL2, etc.)
+#   - wrong architecture entirely
+#
+# Usage: n810-lint <binary> [--verbose]
+set -u
+
+BIN="${1:?usage: n810-lint <binary> [--verbose]}"
+VERBOSE="${2:-}"
+fail=0
+
+say()  { printf '%s\n' "$*"; }
+bad()  { say "FAIL  $*"; fail=1; }
+ok()   { say "ok    $*"; }
+
+[ -f "$BIN" ] || { say "error: $BIN not found"; exit 2; }
+
+# --- 1. Architecture -------------------------------------------------------
+hdr=$(readelf -h "$BIN" 2>/dev/null)
+echo "$hdr" | grep -q "Machine:.*ARM" || { bad "not an ARM binary"; exit 1; }
+echo "$hdr" | grep -q "Class:.*ELF32" || bad "not 32-bit"
+echo "$hdr" | grep -qE "Type:.*(EXEC|DYN)" || bad "not an executable"
+
+attrs=$(readelf -A "$BIN" 2>/dev/null)
+arch=$(echo "$attrs" | grep "Tag_CPU_arch" | sed 's/.*: *//')
+case "$arch" in
+    v4T|v5TE|v6)  ok "ELF CPU arch: $arch" ;;
+    "")           ok "no Tag_CPU_arch (may be asm-only); continuing" ;;
+    *)            bad "ELF CPU arch $arch > v6" ;;
+esac
+
+# --- 2. Illegal-instruction scan -------------------------------------------
+# The definitive check. llvm-objdump disassembles; we grep for opcodes the
+# OMAP2420 cannot execute. ELF attribute tags lie — this list does not.
+if command -v llvm-objdump >/dev/null; then
+    hits=$(llvm-objdump -d "$BIN" 2>/dev/null \
+        | grep -oE '\b(ldrexb?|ldrexh|ldrexd|strexb?|strexh|strexd|clrex|sdiv|udiv|mcr[0-9]* +p15.*|dmb|dsb|isb|sev|wfe|wfi)\b' \
+        | sort | uniq -c)
+    # mcr/mrc are legal on v6 (cp15 cache/TLB ops) — but mcr p15 ops like
+    # barriers may not be. Flag ldrex/strex/clrex/dmb/dsb/isb/sdiv/udiv hard.
+    hard=$(llvm-objdump -d "$BIN" 2>/dev/null \
+        | grep -oE '\b(ldrexb?|ldrexh|ldrexd|strexb?|strexh|strexd|clrex|dmb|dsb|isb|sdiv|udiv)\b' \
+        | sort | uniq -c)
+    if [ -n "$hard" ]; then
+        bad "v6K+/v7-only instructions present (SIGILL on ARM1136 r0):"
+        say "$hard" | sed 's/^/      /'
+    else
+        ok "no v6K+/v7 instructions"
+    fi
+    [ "$VERBOSE" = "--verbose" ] && [ -n "$hits" ] && { say "      all exclusive/cp15 hits:"; say "$hits" | sed 's/^/      /'; }
+else
+    say "warn  llvm-objdump missing — opcode scan skipped"
+fi
+
+# --- 3. Library linkage -----------------------------------------------------
+# What actually exists on Diablo (from device probe). Anything else = won't run.
+needed=$(readelf -d "$BIN" 2>/dev/null | grep NEEDED | sed 's/.*\[\(.*\)\].*/\1/')
+if [ -n "$needed" ]; then
+    while IFS= read -r lib; do
+        case "$lib" in
+            libSDL-2*|libSDL2*)        bad "links $lib — SDL2 does not exist on Maemo" ;;
+            libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libz.so*|libSDL-1.2*|libasound.so*|libX11.so*|libgtk*|libgdk*|libglib*|libgobject*|libhildon*|libosso*|libdbus*|libstdc++*|libgcc_s*) ok "links $lib" ;;
+            *) say "warn  links $lib — not in known Diablo set, verify on device" ;;
+        esac
+    done <<< "$needed"
+else
+    ok "statically linked (no NEEDED)"
+fi
+
+# --- verdict ---------------------------------------------------------------
+if [ "$fail" -eq 0 ]; then
+    say "PASS  $BIN — no blockers found"
+    exit 0
+else
+    say "FAIL  $BIN — will not run on OMAP2420/Diablo as-is"
+    exit 1
+fi

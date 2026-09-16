@@ -38,9 +38,15 @@
 #      adversarially testable without a device (selftest_gate.sh).
 set -u
 TESTDIR=$(cd "$(dirname "$0")" && pwd)
-ENVD=$TESTDIR/../environment
-PERF=$ENVD/tools/n810-perf
-MATCH=$ENVD/tools/stream_match.py
+# Measurement tools ship WITH the verifier (tests/tools/): harbor uploads
+# only tests/ into the container, and /usr/local/bin copies are agent-
+# writable (agent runs as root). No fallback; missing tool aborts scoring.
+PERF="$TESTDIR/tools/n810-perf"
+MATCH="$TESTDIR/tools/stream_match.py"
+LINT="$TESTDIR/tools/n810-lint"
+for t in "$PERF" "$MATCH" "$LINT"; do
+    [ -e "$t" ] || { echo "[verifier] FATAL: verifier tool missing: $t" >&2; exit 3; }
+done
 DIST=/work/dist
 WORK=$(mktemp -d /tmp/verify.XXXXXX)
 mkdir -p /logs/verifier
@@ -82,7 +88,7 @@ say "artifact_present=$m_artifact (app=$APP headless=$HL)"
 L=1
 for b in "$APP" "$HL"; do
     [ -f "$b" ] || continue
-    "$ENVD/tools/n810-lint" "$b" | grep -q "^PASS" || L=0
+    "$LINT" "$b" | grep -q "^PASS" || L=0
 done
 m_lint=$L
 say "lint_clean=$m_lint"
@@ -136,37 +142,36 @@ say "anchors: base_emu=$BASE_EMU base_app=$BASE_APP ($anchor)"
 # ---------- headless throughput (verified, min across variants) --------------
 if [ -f "$HL" ]; then
     say "headless bench: 1800 frames x 2 variants (stream-verified, min across variants)"
-    V1=0; V2=0; k=0
-    for V_ in 1 2; do
-        k=$V_
+    V1=""; V2=""
+    for k in 1 2; do
         OUT=$("$PERF" --headless "$HL" --frames 1800 --bench "$WORK/bench$k.gb" \
               --golden "$WORK/gold$k.bin" --lcg "$WORK/lcg$k.bin" --matcher "$MATCH")
         say "$OUT"
         V=$(echo "$OUT" | grep -oE '[0-9.]+ fps' | head -1 | awk '{print $1}')
-        V=${V:-0}
-        [ $k = 1 ] && V1=$V || V2=$V
+        [ $k = 1 ] && V1=${V:-} || V2=${V:-}
+        [ -n "${V:-}" ] || say "warn: variant $k produced no fps (measurement failed) — excluded from min"
     done
-    m_emu_fps=$(python3 -c "print(min($V1,$V2))")
-    say "emu_fps=$m_emu_fps (min of 2 private variants: $V1 / $V2)"
+    m_emu_fps=$(python3 -c "vs=[v for v in ('$V1','$V2') if v]; print(min(map(float,vs)) if vs else 0)")
+    say "emu_fps=$m_emu_fps (min of measured variants: ${V1:-none} / ${V2:-none})"
 fi
 
 # ---------- app realized fps + cpu + still-renders (verified) -----------------
 if [ -f "$APP" ]; then
     say "app bench: 30s fbdev run x 2 variants (stream-verified, min across variants)"
-    V1=0; V2=0
+    V1=""; V2=""
     for k in 1 2; do
         OUT=$("$PERF" --app "$APP" --secs 30 --bench "$WORK/bench$k.gb" \
               --golden "$WORK/gold$k.bin" --lcg "$WORK/lcg$k.bin" --matcher "$MATCH")
         say "$OUT"
         V=$(echo "$OUT" | grep -oE '[0-9.]+ fps' | head -1 | awk '{print $1}')
-        V=${V:-0}
-        [ $k = 1 ] && V1=$V || V2=$V
+        [ $k = 1 ] && V1=${V:-} || V2=${V:-}
+        [ -n "${V:-}" ] || say "warn: variant $k produced no fps (measurement failed) — excluded from min"
         C=$(echo "$OUT" | grep -oE 'cpu: [0-9]+%' | grep -oE '[0-9]+' | head -1)
         [ -n "${C:-}" ] && m_cpu=$C
         echo "$OUT" | grep -q "proc: ALIVE" && m_alive=1
     done
-    m_app_fps=$(python3 -c "print(min($V1,$V2))")
-    say "app_fps=$m_app_fps cpu_pct=$m_cpu alive=$m_alive (min of 2 variants: $V1 / $V2)"
+    m_app_fps=$(python3 -c "vs=[v for v in ('$V1','$V2') if v]; print(min(map(float,vs)) if vs else 0)")
+    say "app_fps=$m_app_fps cpu_pct=$m_cpu alive=$m_alive (min of measured variants: ${V1:-none} / ${V2:-none})"
 
     # still renders? three in-run dumps: non-white AND pairwise different.
     # bench.gb scrolls + rewrites a tile every frame, so an honest renderer's

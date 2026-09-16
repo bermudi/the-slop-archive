@@ -1,0 +1,135 @@
+#!/bin/bash
+# n810-run — run a binary on the real N810 and return proof of what happened.
+#
+# Two display modes:
+#   --x11     launch under the running Xomap desktop as a normal managed app
+#             (DISPLAY=:0). X stays alive. The fb screenshot shows the real
+#             desktop INCLUDING the app's window + taskbar — exactly what a
+#             user sees. This is the "real app" path.
+#   --fbdev   for raw-/dev/fb0 binaries that bypass X. Freezes Xomap with
+#             SIGSTOP (watchdog-safe — NEVER kill X, it reboots the tablet),
+#             runs the binary, dumps fb, restores X with SIGCONT.
+#
+# In both modes: uploads the binary if --push given, runs for N seconds,
+# captures /dev/fb0 (800x480 RGB565) + stdout/stderr log, pulls both back.
+#
+# Usage:
+#   n810-run <local-binary> <rom.gb> [options]
+#     --secs N        run time before screenshot+kill   (default 30)
+#     --fbdev         use the X-freeze fbdev path        (default: --x11)
+#     --x11           launch under X (default)
+#     --out PREFIX    output files: PREFIX.png, PREFIX.log
+#     --dump-at LIST  comma-separated times (s) at which to take extra fb
+#                     dumps: PREFIX.t<T>.raw/.png (same run, not separate)
+#     --as-user       run as 'user' even in fbdev mode (default: root for fbdev)
+#
+# Output: <out>.png  — 800x480 screenshot of the actual panel
+#         <out>.log  — the binary's stdout/stderr
+#         <out>.fd   — /proc/<pid> evidence snapshots (fd table + audio libs
+#                      in maps) taken in-run; proves what the app actually
+#                      opened (audio device, X socket, files)
+#         exit 0 if the process was still alive at screenshot time,
+#         exit 1 if it died early (log shows how).
+set -u
+
+SECS=30
+MODE=x11
+OUT=n810-shot
+BIN=""; ROM=""; DUMPS=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --secs)  SECS="$2"; shift 2 ;;
+        --fbdev) MODE=fbdev; shift ;;
+        --x11)   MODE=x11; shift ;;
+        --dump-at) DUMPS="$2"; shift 2 ;;
+        --out)   OUT="$2"; shift 2 ;;
+        --as-user) ASUSER=1; shift ;;
+        -*) echo "unknown flag $1" >&2; exit 2 ;;
+        *) [ -z "$BIN" ] && BIN="$1" || ROM="$1"; shift ;;
+    esac
+done
+[ -n "$BIN" ] && [ -n "$ROM" ] || { echo "usage: n810-run <binary> <rom> [--secs N] [--x11|--fbdev] [--out P]" >&2; exit 2; }
+
+# Serialize on the device itself — works across containers, unlike local flock.
+i=0
+until ssh n810 "mkdir /home/user/.bench-lock" 2>/dev/null; do
+    i=$((i+1)); [ $i -gt 120 ] && { echo "device lock timeout" >&2; exit 3; }
+    sleep 5
+done
+trap 'ssh n810 "rmdir /home/user/.bench-lock" 2>/dev/null' EXIT
+
+B=$(basename "$BIN")
+R=$(basename "$ROM")
+RBIN="/home/user/.n810-run/$B"
+RROM="/home/user/.n810-run/$R"
+
+# Push fresh copies (cheap insurance against stale artifacts)
+ssh n810 "mkdir -p ~/.n810-run" || exit 3
+scp -q "$BIN" "n810:$RBIN" || exit 3
+scp -q "$ROM" "n810:$RROM" || exit 3
+
+RDUMPS=${DUMPS//,/ }
+if [ "$MODE" = fbdev ]; then
+    # Root shell: freeze X, run, dump fb at requested times while running,
+    # restore X with SIGCONT.
+    # Everything lives in /home/user — /tmp is a 512KB tmpfs, too small.
+    # Each dump time also snapshots /proc/$EP/{fd,maps-audio}: what the app
+    # actually opened (catches working audio via /dev/dsptask*, libasound,
+    # libesd — and dead OSS commits that opened nothing).
+    DUMPPART="E=0; for T in $RDUMPS; do sleep \$((T-E)); E=\$T; dd if=/dev/fb0 bs=1600 count=480 of=$RBIN.t\$T.fb 2>/dev/null; ls -l /proc/\$EP/fd 2>/dev/null > $RBIN.fd.t\$T; echo ---maps >> $RBIN.fd.t\$T; grep libasound /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.t\$T; grep libesd /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.t\$T; done; sleep \$((SECS_PLACEHOLDER-E))"
+    DUMPPART=$(echo "$DUMPPART" | sed "s/SECS_PLACEHOLDER/$SECS/g")
+    if [ -z "$DUMPS" ]; then DUMPPART="sleep \$((SECS_PLACEHOLDER/2)); ls -l /proc/\$EP/fd 2>/dev/null > $RBIN.fd.mid; echo ---maps >> $RBIN.fd.mid; grep libasound /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.mid; grep libesd /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.mid; sleep \$((SECS_PLACEHOLDER-SECS_PLACEHOLDER/2))"; DUMPPART=$(echo "$DUMPPART" | sed "s/SECS_PLACEHOLDER/$SECS/g"); fi
+    ssh n810 "X=\$(pidof Xomap); printf 'kill -STOP '\$X'; chmod +x $RBIN; $RBIN $RROM > $RBIN.log 2>&1 & EP=\$!; $DUMPPART; kill -0 \$EP 2>/dev/null && echo ALIVE > $RBIN.status || echo DEAD > $RBIN.status; dd if=/dev/fb0 bs=1600 count=480 of=$RBIN.fb 2>/dev/null; kill \$EP 2>/dev/null; kill -CONT '\$X'; exit\n' | sudo gainroot" \
+        || { echo "n810-run: device command failed" >&2; exit 3; }
+else
+    # X11 mode: just launch on the desktop. Screenshot anytime.
+    # Same /proc snapshots as fbdev mode — fd table + audio libs per dump.
+    DUMPPART="E=0; for T in $RDUMPS; do sleep \$((T-E)); E=\$T; dd if=/dev/fb0 bs=1600 count=480 of=$RBIN.t\$T.fb 2>/dev/null; ls -l /proc/\$EP/fd 2>/dev/null > $RBIN.fd.t\$T; echo ---maps >> $RBIN.fd.t\$T; grep libasound /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.t\$T; grep libesd /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.t\$T; done; sleep \$((SECS_PLACEHOLDER-E))"
+    DUMPPART=$(echo "$DUMPPART" | sed "s/SECS_PLACEHOLDER/$SECS/g")
+    if [ -z "$DUMPS" ]; then DUMPPART="sleep \$((SECS_PLACEHOLDER/2)); ls -l /proc/\$EP/fd 2>/dev/null > $RBIN.fd.mid; echo ---maps >> $RBIN.fd.mid; grep libasound /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.mid; grep libesd /proc/\$EP/maps 2>/dev/null >> $RBIN.fd.mid; sleep \$((SECS_PLACEHOLDER-SECS_PLACEHOLDER/2))"; DUMPPART=$(echo "$DUMPPART" | sed "s/SECS_PLACEHOLDER/$SECS/g"); fi
+    ssh n810 "chmod +x $RBIN; DISPLAY=:0.0 $RBIN $RROM > $RBIN.log 2>&1 & EP=\$!; $DUMPPART; kill -0 \$EP 2>/dev/null && echo ALIVE > $RBIN.status || echo DEAD > $RBIN.status; dd if=/dev/fb0 bs=1600 count=480 of=$RBIN.fb 2>/dev/null; kill \$EP 2>/dev/null; echo done" \
+        || { echo "n810-run: device command failed" >&2; exit 3; }
+fi
+
+scp -q "n810:$RBIN.fb" "$OUT.raw" || exit 3
+scp -q "n810:$RBIN.log" "$OUT.log" || exit 3
+for T in $RDUMPS; do
+    scp -q "n810:$RBIN.t$T.fb" "$OUT.t$T.raw" || exit 3
+done
+# Fold all /proc snapshots into one evidence file and pull it (may be empty
+# if the process died before any sample — that itself is evidence).
+ssh n810 "cat $RBIN.fd.t* $RBIN.fd.mid > $RBIN.fd 2>/dev/null" 2>/dev/null
+scp -q "n810:$RBIN.fd" "$OUT.fd" 2>/dev/null || true
+STATUS=$(ssh n810 "cat $RBIN.status 2>/dev/null")
+
+# Decode RGB565 -> PNG (PIL preferred, PPM fallback) - final dump + any --dump-at dumps
+for IMG in "$OUT" $(for T in $RDUMPS; do echo "$OUT.t$T"; done); do
+python3 - "$IMG" <<'PY'
+import struct, sys
+out = sys.argv[1]
+data = open(out + ".raw", "rb").read()
+w, h = 800, 480
+if len(data) < w * h * 2:
+    print(f"warn: fb dump only {len(data)} bytes", file=sys.stderr)
+img = bytearray(w * h * 3)
+for y in range(h):
+    for x in range(w):
+        px = struct.unpack_from('<H', data, (y * w + x) * 2)[0]
+        i = (y * w + x) * 3
+        img[i] = ((px >> 11) & 31) * 8
+        img[i + 1] = ((px >> 5) & 63) * 4
+        img[i + 2] = (px & 31) * 8
+try:
+    from PIL import Image
+    Image.frombytes('RGB', (w, h), bytes(img)).save(out + ".png")
+    print(f"{out}.png")
+except ImportError:
+    open(out + ".ppm", "wb").write(b'P6\n800 480\n255\n' + bytes(img))
+    print(f"{out}.ppm")
+PY
+done
+
+echo "log:  $OUT.log"
+echo "proc: $STATUS"
+[ "$STATUS" = "ALIVE" ]

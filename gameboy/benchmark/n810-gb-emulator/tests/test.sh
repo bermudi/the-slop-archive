@@ -11,6 +11,14 @@ say() { echo "[verifier] $*"; }
 DIST=/work/dist
 WORK=/tmp/verify
 mkdir -p "$WORK"
+TESTDIR="$(cd "$(dirname "$0")" && pwd)"
+# Verifier tools ship WITH the verifier (tests/tools/): the /usr/local/bin
+# copies the agent used are agent-writable (agent runs as root) and must
+# never grade. No fallback; missing tool aborts scoring.
+TOOLSD="$TESTDIR/tools"
+for t in "$TOOLSD/n810-run" "$TOOLSD/n810-lint"; do
+    [ -e "$t" ] || { echo "FATAL: verifier tool missing: $t" >&2; exit 3; }
+done
 
 # ---------- locate the artifact --------------------------------------------
 BIN=""
@@ -39,7 +47,7 @@ say "artifact_present=$m_artifact (bin='$BIN' pkg='$PKG' desktop='$DESKTOP_FILE'
 
 # ---------- lint ------------------------------------------------------------
 if [ -n "$BIN" ]; then
-    if n810-lint "$BIN" | tee "$WORK/lint.out" | grep -q "^PASS"; then m_lint=1; fi
+    if "$TOOLSD/n810-lint" "$BIN" | tee "$WORK/lint.out" | grep -q "^PASS"; then m_lint=1; fi
     say "lint_clean=$m_lint"
 fi
 
@@ -111,8 +119,6 @@ scp -q n810:/home/user/.bench-base.fb "$WORK/base.raw"
 # Ground truth is double-derived: the generator's Python model AND the trusted
 # reference emulator (tests/ref/, round one's verified winner) must agree
 # byte-for-byte, else we refuse to score (exit 4 = instrument invalid).
-TESTDIR="$(cd "$(dirname "$0")" && pwd)"
-ENVD="$TESTDIR/../environment"
 CHAL_SEED=$(od -An -N1 -tu1 /dev/urandom | tr -d ' ')
 say "challenge seed=$CHAL_SEED"
 # Ref-source integrity: harbor's tests/ upload is a same-name-overwrite
@@ -141,10 +147,10 @@ ROM="$TESTDIR/roms/demo.gb"
 [ -f "$ROM" ] || { say "FATAL: verifier ROM missing: $ROM"; exit 3; }
 if [ -n "$BIN" ] && [ "$m_artifact" = 1 ]; then
     say "challenge run under X for 20s"
-    n810-run "$BIN" "$WORK/challenge.gb" --x11 --secs 20 --out "$WORK/chal" && CRC=0 || CRC=$?
+    "$TOOLSD/n810-run" "$BIN" "$WORK/challenge.gb" --x11 --secs 20 --out "$WORK/chal" && CRC=0 || CRC=$?
     say "challenge run rc=$CRC"
     say "demo run under X for 30s (fb dumps at 12s, 26s)"
-    n810-run "$BIN" "$ROM" --x11 --secs 30 --dump-at 12,26 --out "$WORK/x11" && RUNRC=0 || RUNRC=$?
+    "$TOOLSD/n810-run" "$BIN" "$ROM" --x11 --secs 30 --dump-at 12,26 --out "$WORK/x11" && RUNRC=0 || RUNRC=$?
     say "run rc=$RUNRC"
     [ "$RUNRC" = 0 ] && m_alive=1
     say "runs_alive=$m_alive"
