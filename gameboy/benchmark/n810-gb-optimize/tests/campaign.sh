@@ -14,7 +14,7 @@
 # with --force (e.g. after changing suite.tsv or the cap).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-ENVD="$HERE/../environment"
+ENVD="$HERE"
 N=20
 CAP=1200
 FORCE=0
@@ -39,9 +39,9 @@ scp -q "$HERE/suite.tsv" "$HERE/suite_run.sh" n810:/home/user/.n810-run/suite/
 scp -q "$HERE"/ref/*.c "$HERE"/ref/*.h n810:/home/user/.n810-run/suite/refsrc/
 while IFS=$'\t' read -r f m w; do
     case "$f" in ''|\#*) continue ;; esac
-    scp -q "$ENVD/roms/$f" "n810:/home/user/.n810-run/suite/roms/"
+    scp -q "$HERE/roms/$f" "n810:/home/user/.n810-run/suite/roms/"
 done < "$HERE/suite.tsv"
-scp -q "$ENVD/roms/trap.gb" n810:/home/user/.n810-run/suite/roms/
+scp -q "$HERE/roms/trap.gb" n810:/home/user/.n810-run/suite/roms/
 ssh n810 "chmod +x /home/user/.n810-run/suite/suite_run.sh"
 
 echo "[campaign] building reference core on device (gcc 3.4.4 -O2 -std=c99)"

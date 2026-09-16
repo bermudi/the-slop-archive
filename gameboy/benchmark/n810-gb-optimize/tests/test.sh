@@ -66,6 +66,14 @@ if [ ! -f "$MAN" ]; then
     say "FATAL: baseline manifest missing — run tests/campaign.sh first"
     exit 3
 fi
+# Manifest must describe exactly what we grade: suite names and cap.
+python3 - "$MAN" "$TESTDIR/suite.tsv" <<'PY' || { say "FATAL: manifest/suite.tsv/cap mismatch — rerun tests/campaign.sh --force"; exit 3; }
+import json, sys
+m = json.load(open(sys.argv[1]))
+rows = [l.split("\t")[0] for l in open(sys.argv[2]) if l.strip() and not l.startswith("#")]
+assert m["suite"] == rows, f"suite drift: {m['suite']} != {rows}"
+assert int(m["frame_cap"]) == 1200, f"cap drift: {m['frame_cap']} != 1200"
+PY
 
 [ -x "$APP" ] && [ -x "$HL" ] && m_artifact=1
 say "artifact_present=$m_artifact (app=$APP headless=$HL)"
@@ -81,7 +89,11 @@ say "lint_clean=$m_lint"
 
 # ---------- instrument: reference core + private variants + goldens ----------
 say "building trusted reference core"
-cc -O2 -std=c99 -o "$WORK/gbn8-ref" "$TESTDIR"/ref/*.c 2>>"$VLOG" || {
+# Ref-source integrity: harbor's tests/ upload is a same-name-overwrite
+# merge — planted NEW .c files survive it. Compile EXACTLY the vendored set.
+[ "$(ls "$TESTDIR"/ref/*.c | xargs -n1 basename | sort)" = "$(grep -v '^#' "$TESTDIR/ref/SOURCES.txt" | sort)" ] || {
+    say "FATAL: tests/ref/*.c does not match ref/SOURCES.txt — refusing to build goldens from unexpected sources"; exit 4; }
+cc -O2 -std=c99 -o "$WORK/gbn8-ref" $(sed "s|^|$TESTDIR/ref/|" "$TESTDIR/ref/SOURCES.txt" | grep -v '/#') 2>>"$VLOG" || {
     say "FATAL: reference core failed to build"; exit 3; }
 
 for k in 1 2; do
@@ -123,37 +135,38 @@ say "anchors: base_emu=$BASE_EMU base_app=$BASE_APP ($anchor)"
 
 # ---------- headless throughput (verified, min across variants) --------------
 if [ -f "$HL" ]; then
-    say "headless bench: 1800 frames x 2 variants (stream-verified)"
-    BEST=0
-    for k in 1 2; do
+    say "headless bench: 1800 frames x 2 variants (stream-verified, min across variants)"
+    V1=0; V2=0; k=0
+    for V_ in 1 2; do
+        k=$V_
         OUT=$("$PERF" --headless "$HL" --frames 1800 --bench "$WORK/bench$k.gb" \
               --golden "$WORK/gold$k.bin" --lcg "$WORK/lcg$k.bin" --matcher "$MATCH")
         say "$OUT"
         V=$(echo "$OUT" | grep -oE '[0-9.]+ fps' | head -1 | awk '{print $1}')
         V=${V:-0}
-        BEST=$(python3 -c "print(max($BEST,$V))")
+        [ $k = 1 ] && V1=$V || V2=$V
     done
-    m_emu_fps=$BEST
-    say "emu_fps=$m_emu_fps (best of 2 private variants)"
+    m_emu_fps=$(python3 -c "print(min($V1,$V2))")
+    say "emu_fps=$m_emu_fps (min of 2 private variants: $V1 / $V2)"
 fi
 
 # ---------- app realized fps + cpu + still-renders (verified) -----------------
 if [ -f "$APP" ]; then
-    say "app bench: 30s fbdev run x 2 variants (stream-verified)"
-    BEST=0
+    say "app bench: 30s fbdev run x 2 variants (stream-verified, min across variants)"
+    V1=0; V2=0
     for k in 1 2; do
         OUT=$("$PERF" --app "$APP" --secs 30 --bench "$WORK/bench$k.gb" \
               --golden "$WORK/gold$k.bin" --lcg "$WORK/lcg$k.bin" --matcher "$MATCH")
         say "$OUT"
         V=$(echo "$OUT" | grep -oE '[0-9.]+ fps' | head -1 | awk '{print $1}')
         V=${V:-0}
-        BEST=$(python3 -c "print(max($BEST,$V))")
+        [ $k = 1 ] && V1=$V || V2=$V
         C=$(echo "$OUT" | grep -oE 'cpu: [0-9]+%' | grep -oE '[0-9]+' | head -1)
         [ -n "${C:-}" ] && m_cpu=$C
         echo "$OUT" | grep -q "proc: ALIVE" && m_alive=1
     done
-    m_app_fps=$BEST
-    say "app_fps=$m_app_fps cpu_pct=$m_cpu alive=$m_alive (best of 2 variants)"
+    m_app_fps=$(python3 -c "print(min($V1,$V2))")
+    say "app_fps=$m_app_fps cpu_pct=$m_cpu alive=$m_alive (min of 2 variants: $V1 / $V2)"
 
     # still renders? three in-run dumps: non-white AND pairwise different.
     # bench.gb scrolls + rewrites a tile every frame, so an honest renderer's
@@ -197,24 +210,35 @@ fi
 # ---------- correctness gate (v3: preservation by name) ----------------------
 if [ -f "$HL" ]; then
     say "test ROMs (by name, mode-aware; trap.gb diagnostic-only)"
-    ssh n810 "rm -rf /home/user/.n810-run/suite; mkdir -p /home/user/.n810-run/suite/roms" 2>/dev/null
-    scp -q "$HL" n810:/home/user/.n810-run/suite/hl-bin
-    scp -q "$TESTDIR/suite.tsv" "$TESTDIR/suite_run.sh" n810:/home/user/.n810-run/suite/
-    # ROM source: prefer the harness-staged copy next to the verifier
-    # (trusted; the agent cannot write it). /opt/n810/roms inside the task
-    # container is agent-writable — reading ROMs from there let a tampered
-    # 01-special.gb pass the gate. Fallback covers container-only staging.
-    ROMDIR="$ENVD/roms"
-    [ -d "$ROMDIR" ] || ROMDIR=/opt/n810/roms
+    # ROM source: tests/roms ships WITH the verifier (harbor uploads only
+    # tests/ into the container, same-name-overwriting agent-planted
+    # files). /opt/n810/roms is the agent-side copy inside the container
+    # (agent runs as root there) and must NEVER grade. No fallback: refuse.
+    ROMDIR="$TESTDIR/roms"
     while IFS=$'\t' read -r f m w; do
         case "$f" in ''|\#*) continue ;; esac
-        scp -q "$ROMDIR/$f" n810:/home/user/.n810-run/suite/roms/ || say "warn: could not stage $f"
+        [ -f "$ROMDIR/$f" ] || { say "FATAL: verifier ROM missing: $ROMDIR/$f"; exit 3; }
     done < "$TESTDIR/suite.tsv"
-    scp -q "$ROMDIR/trap.gb" n810:/home/user/.n810-run/suite/roms/
-    ssh n810 "chmod +x /home/user/.n810-run/suite/suite_run.sh" 2>/dev/null
+    [ -f "$ROMDIR/trap.gb" ] || { say "FATAL: verifier ROM missing: $ROMDIR/trap.gb"; exit 3; }
+    # Unpredictable staging dir on the device: the agent had SSH for the
+    # whole run, so a fixed path could be pre-planted (stub ROMs) or made
+    # undeletable (chattr). A fresh random name defeats both.
+    SUITE="v$$.$RANDOM"
+    ssh n810 "mkdir -p /home/user/.n810-run/$SUITE/roms" 2>/dev/null
+    scp -q "$HL" "n810:/home/user/.n810-run/$SUITE/hl-bin"
+    scp -q "$TESTDIR/suite.tsv" "$TESTDIR/suite_run.sh" "n810:/home/user/.n810-run/$SUITE/"
+    while IFS=$'\t' read -r f m w; do
+        case "$f" in ''|\#*) continue ;; esac
+        scp -q "$ROMDIR/$f" "n810:/home/user/.n810-run/$SUITE/roms/" || say "warn: could not stage $f"
+    done < "$TESTDIR/suite.tsv"
+    scp -q "$ROMDIR/trap.gb" "n810:/home/user/.n810-run/$SUITE/roms/"
+    ssh n810 "chmod +x /home/user/.n810-run/$SUITE/suite_run.sh" 2>/dev/null
     # Same predicate and cap as the manifest campaign: 1200 frames (~20
-    # emulated s, >=4x any individual's budget per NOTES 1.8).
-    OUT=$(ssh n810 "cd /home/user/.n810-run/suite && ./suite_run.sh ./hl-bin frames 1200" 2>/dev/null)
+    # emulated s, >=4x any individual's budget per NOTES 1.8). Bounded: a
+    # wedged build must not eat the verifier budget — timeout fails closed
+    # (empty results => regressions => zero speed credit, reward.json written).
+    OUT=$(timeout 900 ssh n810 "cd /home/user/.n810-run/$SUITE && ./suite_run.sh ./hl-bin frames 1200" 2>/dev/null)
+    [ -n "$OUT" ] || say "warn: suite produced no output (timeout or staging failure) — grading fail-closed"
     OUT="$OUT" python3 > "$ROMSJSON" <<'PY'
 import json, os
 raw = os.environ.get("OUT", "")
@@ -239,8 +263,8 @@ PY
     CSEED=$(od -An -tu1 -N1 /dev/urandom | tr -d ' ')
     python3 "$TESTDIR/mkchallenge.py" --seed "$CSEED" --rom "$WORK/ch.gb" \
         --serial "$WORK/ch.sig" >>"$VLOG" || exit 3
-    scp -q "$WORK/ch.gb" n810:/home/user/.n810-run/challenge.gb
-    ssh n810 "/home/user/.n810-run/suite/hl-bin /home/user/.n810-run/challenge.gb --frames 300" \
+    scp -q "$WORK/ch.gb" "n810:/home/user/.n810-run/$SUITE/challenge.gb"
+    ssh n810 "/home/user/.n810-run/$SUITE/hl-bin /home/user/.n810-run/$SUITE/challenge.gb --frames 300" \
         > "$WORK/ch.out" 2>>"$VLOG"
     if python3 -c "
 import sys
@@ -250,6 +274,7 @@ sys.exit(0 if sig in out else 1)"; then
         m_challenge=1
     fi
     say "challenge_sig=$m_challenge (seed=$CSEED)"
+    ssh n810 "rm -rf /home/user/.n810-run/$SUITE" 2>/dev/null
 fi
 
 # ---------- reward (v3: score.py owns the arithmetic) ------------------------

@@ -17,9 +17,11 @@ BIN=${1:?binary}; KMODE=${2:-frames}; KARG=${3:-1200}
 
 run_one() {
     # $1 = rom file, $2 = want substring ("" = expect silence)
+    # Verdicts read from STDOUT ONLY: serial output is stdout by contract;
+    # merging stderr (v2) let a binary forge "PASS" via debug noise.
     case "$KMODE" in
-        frames)  OUT=$("$BIN" "roms/$1" --frames "$KARG" 2>&1); EC=$? ;;
-        seconds) OUT=$("$BIN" --headless "roms/$1" --seconds "$KARG" 2>&1); EC=$? ;;
+        frames)  OUT=$("$BIN" "roms/$1" --frames "$KARG" 2>/dev/null); EC=$? ;;
+        seconds) OUT=$("$BIN" --headless "roms/$1" --seconds "$KARG" 2>/dev/null); EC=$? ;;
         *) echo "suite_run: unknown mode $KMODE" >&2; exit 2 ;;
     esac
     if [ "$EC" -ne 0 ]; then echo "$1 0"; return; fi
@@ -38,4 +40,5 @@ while IFS='	' read -r F MODE WANT; do
 done < suite.tsv
 
 # diagnostic: trap.gb must run silent and exit cleanly at the cap
-run_one trap.gb ""
+D=$(run_one trap.gb "")
+echo "#diag $D"

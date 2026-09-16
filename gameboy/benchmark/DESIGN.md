@@ -122,7 +122,10 @@ not a silent pass. Suite grading is mode-aware and per-ROM (v3):
 `tests/suite_run.sh` grades each micro ROM by name against its expected
 status word, trap.gb runs as a silent-clean-exit diagnostic (it has no
 serial signature — see Track B gate v3), and reward.json carries the full
-`rom_results` map. Remaining known gap: the four micro ROMs' pass strings
+`rom_results` map. The `test_roms` denominator is FIXED (suite.tsv rows +
+challenge): a staged-but-missing result counts as a failure, so blocked
+staging can never inflate the fraction (v3.1 — review finding). Remaining
+known gap: the four micro ROMs' pass strings
 are still greppable — the challenge signature is the actual gate. And
 `audio_works` proves a stream was opened and driven, not loudness
 (audibility was human-verified once for the SDL path; no /proc signal
@@ -227,12 +230,28 @@ implementation quality and rewards whoever wrote the worst baseline. Instead:
     attacks it with adversarial vectors on host (do-nothing → 0.30,
     fix-one-break-one → speed zeroed, overspeed → app zero, ssh-dead → fail
     closed). Do-nothing floor rose 0.257 → 0.300 because trap.gb's dead
-    denominator slot was reallocated to real signal.
-  - **ROM-source trust fix**: the verifier stages ROMs from the
-    harness-staged copy beside it (`$ENVD/roms`), falling back to
-    `/opt/n810/roms` only when absent. Inside the task container
-    `/opt/n810/roms` is agent-writable — v2's gate could in principle be
-    opened by a tampered ROM.
+    denominator slot was reallocated to real signal. Also: fps is now
+    genuinely min-across-variants (the code had max while this doc said
+    min); the manifest/suite.tsv/cap are cross-checked at scoring start
+    (drift aborts); verdicts read stdout only (stderr can no longer forge
+    a PASS); note the want-words are strict substrings, so blargg's `Done`
+    terminal word is NOT accepted for the two individuals (irrelevant for
+    the frozen set — they print `Passed`).
+  - **ROM-source trust (v3.1, corrected after review)**: the verifier's
+    ROMs live in `tests/roms/` and ship WITH the verifier — harbor uploads
+    only `tests/` into the container (a same-name-overwrite merge), so the
+    graded copies are pristine no matter what the agent planted. The first
+    attempt ("prefer $ENVD/roms, fall back to /opt/n810/roms") was dead
+    code in deployment: $ENVD never exists in the container and the agent
+    runs as root, so the fallback — the agent-writable copy — was the only
+    path ever taken. Now there is no fallback; missing verifier ROMs abort
+    scoring (exit 3). The same review closed two adjacent holes: the
+    reference core compiles ONLY the files listed in `ref/SOURCES.txt`
+    (harbor's merge leaves planted NEW .c files in place), and device-side
+    staging uses unpredictable directory/binary names (the agent had SSH
+    all run — fixed paths could be pre-planted with stub ROMs or
+    chattr-frozen). Suite ssh calls are bounded (900s/600s) so a wedged
+    build cannot eat the verifier budget; timeout grades fail-closed.
 - **Residual, stated:** an agent could reverse-engineer a scoring variant
   handed to its binary and reimplement the byte generator in C. That is
   targeted fraud, not laziness — it must also survive two fresh variants

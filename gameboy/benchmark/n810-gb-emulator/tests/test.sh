@@ -115,9 +115,13 @@ TESTDIR="$(cd "$(dirname "$0")" && pwd)"
 ENVD="$TESTDIR/../environment"
 CHAL_SEED=$(od -An -N1 -tu1 /dev/urandom | tr -d ' ')
 say "challenge seed=$CHAL_SEED"
+# Ref-source integrity: harbor's tests/ upload is a same-name-overwrite
+# merge — planted NEW .c files survive it. Compile EXACTLY the vendored set.
+[ "$(ls "$TESTDIR"/ref/*.c | xargs -n1 basename | sort)" = "$(grep -v '^#' "$TESTDIR/ref/SOURCES.txt" | sort)" ] || {
+    say "FATAL: tests/ref/*.c does not match ref/SOURCES.txt — refusing to build the oracle"; exit 4; }
 if python3 "$TESTDIR/mkchallenge.py" --seed "$CHAL_SEED" --rom "$WORK/challenge.gb" \
         --golden "$WORK/model.ppm" --serial "$WORK/expect.sig" >>"$VLOG" 2>&1 \
-   && cc -O2 -std=c99 -o "$WORK/gbn8" "$TESTDIR"/ref/*.c 2>>"$VLOG" \
+   && cc -O2 -std=c99 -o "$WORK/gbn8" $(sed "s|^|$TESTDIR/ref/|" "$TESTDIR/ref/SOURCES.txt" | grep -v '/#') 2>>"$VLOG" \
    && "$WORK/gbn8" "$WORK/challenge.gb" --frames 30 --ppm "$WORK/golden.ppm" \
         >"$WORK/ref.sig" 2>>"$VLOG" \
    && cmp -s "$WORK/model.ppm" "$WORK/golden.ppm" \
@@ -130,7 +134,11 @@ else
 fi
 
 # ---------- run under X11 ----------------------------------------------------
-ROM="$ENVD/roms/demo.gb"
+# ROM source: tests/roms ships WITH the verifier (harbor uploads only tests/
+# into the container, same-name-overwriting agent-planted files);
+# /opt/n810/roms is the agent-side copy and must never grade.
+ROM="$TESTDIR/roms/demo.gb"
+[ -f "$ROM" ] || { say "FATAL: verifier ROM missing: $ROM"; exit 3; }
 if [ -n "$BIN" ] && [ "$m_artifact" = 1 ]; then
     say "challenge run under X for 20s"
     n810-run "$BIN" "$WORK/challenge.gb" --x11 --secs 20 --out "$WORK/chal" && CRC=0 || CRC=$?
@@ -221,23 +229,32 @@ say "canary_class=$CANARY (oss_string=$m_ossstr audio=$m_audio precise=$PROBE_PR
 # ---------- headless test-ROM run -------------------------------------------
 if [ -n "$BIN" ]; then
     say "headless micro suite (by name, mode-aware; trap.gb diagnostic-only)"
-    scp -q "$BIN" n810:/home/user/.n810-run/hl-bin
-    ssh n810 "chmod +x /home/user/.n810-run/hl-bin; rm -rf /home/user/.n810-run/suite; mkdir -p /home/user/.n810-run/suite/roms"
-    scp -q "$TESTDIR/suite.tsv" "$TESTDIR/suite_run.sh" n810:/home/user/.n810-run/suite/
-    # ROM source: prefer the harness-staged copy next to the verifier
-    # (trusted; the agent cannot write it). /opt/n810/roms inside the task
-    # container is agent-writable — an agent-tampered ROM must never grade.
-    ROMDIR="$ENVD/roms"
-    [ -d "$ROMDIR" ] || ROMDIR=/opt/n810/roms
+    # ROM source: tests/roms ships WITH the verifier (harbor uploads only
+    # tests/, same-name-overwriting agent-planted files); /opt/n810/roms is
+    # the agent-side copy and must never grade. No fallback: refuse.
+    ROMDIR="$TESTDIR/roms"
     while IFS=$'\t' read -r f m w; do
         case "$f" in ''|\#*) continue ;; esac
-        scp -q "$ROMDIR/$f" n810:/home/user/.n810-run/suite/roms/ || say "warn: could not stage $f"
+        [ -f "$ROMDIR/$f" ] || { say "FATAL: verifier ROM missing: $ROMDIR/$f"; exit 3; }
     done < "$TESTDIR/suite.tsv"
-    scp -q "$ROMDIR/trap.gb" n810:/home/user/.n810-run/suite/roms/
-    ssh n810 "chmod +x /home/user/.n810-run/suite/suite_run.sh" 2>/dev/null
+    [ -f "$ROMDIR/trap.gb" ] || { say "FATAL: verifier ROM missing: $ROMDIR/trap.gb"; exit 3; }
+    # Unpredictable names on the device: the agent had SSH all run, so fixed
+    # paths could be pre-planted or made undeletable (chattr).
+    SUITE="v$$.$RANDOM"; HLN="hl.$$.$RANDOM"
+    scp -q "$BIN" "n810:/home/user/.n810-run/$HLN"
+    ssh n810 "chmod +x /home/user/.n810-run/$HLN; mkdir -p /home/user/.n810-run/$SUITE/roms" 2>/dev/null
+    scp -q "$TESTDIR/suite.tsv" "$TESTDIR/suite_run.sh" "n810:/home/user/.n810-run/$SUITE/"
+    while IFS=$'\t' read -r f m w; do
+        case "$f" in ''|\#*) continue ;; esac
+        scp -q "$ROMDIR/$f" "n810:/home/user/.n810-run/$SUITE/roms/" || say "warn: could not stage $f"
+    done < "$TESTDIR/suite.tsv"
+    scp -q "$ROMDIR/trap.gb" "n810:/home/user/.n810-run/$SUITE/roms/"
+    ssh n810 "chmod +x /home/user/.n810-run/$SUITE/suite_run.sh" 2>/dev/null
     # Track A binaries speak --headless/--seconds (the task-specified
-    # interface); same runner and predicate as Track B.
-    OUT=$(ssh n810 "cd /home/user/.n810-run/suite && ./suite_run.sh ../hl-bin seconds 10" 2>/dev/null)
+    # interface); same runner and predicate as Track B. Bounded so a wedged
+    # build cannot eat the verifier budget (timeout grades fail-closed).
+    OUT=$(timeout 600 ssh n810 "cd /home/user/.n810-run/$SUITE && ./suite_run.sh ../$HLN seconds 10" 2>/dev/null)
+    [ -n "$OUT" ] || say "warn: suite produced no output (timeout or staging failure) — grading fail-closed"
     OUT="$OUT" python3 > "$WORK/roms.json" <<'PY'
 import json, os
 raw = os.environ.get("OUT", "")
@@ -255,19 +272,24 @@ for line in raw.splitlines():
             results[name] = int(val == "1")
 json.dump({"results": results, "trap_diagnostic": trap}, sys.stdout)
 PY
-    P=$(python3 -c "import json;print(sum(json.load(open('$WORK/roms.json'))['results'].values()))")
-    F=$(python3 -c "import json;r=json.load(open('$WORK/roms.json'))['results'];print(len(r)-sum(r.values()))")
+    # Fixed denominator: suite.tsv rows + the challenge ROM. A staged-but-
+    # missing result counts as a FAILURE, never as a smaller denominator
+    # (blocked staging must not turn into a free 1.0).
+    ROWS=$(awk 'NF && !/^#/ {n++} END {print n+0}' "$TESTDIR/suite.tsv")
+    P=$(python3 -c "import json;r=json.load(open('$WORK/roms.json'))['results'];print(sum(1 for v in r.values() if v==1))")
+    [ "$P" -gt "$ROWS" ] && P=$ROWS   # clamp: only suite.tsv rows are scoreable
+    F=$((ROWS - P))
     P=${P:-0}; F=${F:-0}
-    say "micro: $P pass / $F fail — $(tr -d '\n' < "$WORK/roms.json" | cut -c1-300)"
+    say "micro: $P pass / $F fail (of $ROWS) — $(tr -d '\n' < "$WORK/roms.json" | cut -c1-300)"
 
     # challenge ROM headless: the seed-derived serial signature must appear in
     # stdout. Kills printf-stubs ("print 'Passed' for any ROM"): the expected
     # bytes are a function of this run's random seed and only executing the
     # ROM's code can produce them.
     m_chalhead=0
-    scp -q "$WORK/challenge.gb" n810:/home/user/.n810-run/challenge.gb
-    ssh n810 "cd /home/user/.n810-run; ./hl-bin --headless challenge.gb --seconds 10 > chal-headless.out 2>/dev/null; echo done" >/dev/null 2>&1
-    scp -q n810:/home/user/.n810-run/chal-headless.out "$WORK/chal-headless.out" 2>/dev/null
+    scp -q "$WORK/challenge.gb" "n810:/home/user/.n810-run/$SUITE/challenge.gb"
+    ssh n810 "cd /home/user/.n810-run/$SUITE && ../$HLN --headless challenge.gb --seconds 10 > chal-headless.out 2>/dev/null; echo done" >/dev/null 2>&1
+    scp -q "n810:/home/user/.n810-run/$SUITE/chal-headless.out" "$WORK/chal-headless.out" 2>/dev/null
     if [ -f "$WORK/chal-headless.out" ]; then
         m_chalhead=$(python3 -c "import sys
 out = open(sys.argv[1],'rb').read()
@@ -276,6 +298,7 @@ print(1 if sig in out else 0)" "$WORK/chal-headless.out" "$WORK/expect.sig" 2>/d
     fi
     say "challenge_headless=$m_chalhead"
     [ "$m_chalhead" = 1 ] && P=$((P+1)) || F=$((F+1))
+    ssh n810 "rm -rf /home/user/.n810-run/$SUITE /home/user/.n810-run/$HLN" 2>/dev/null
 
     # headless_works now REQUIRES the challenge signature: the interface
     # demonstrably executed a novel ROM and reported its serial output.
