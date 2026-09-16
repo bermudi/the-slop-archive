@@ -40,9 +40,32 @@ chattr-frozen). Confirmed on device post-fix: 6/6 + `#diag trap.gb 1`
 under the new runner — frozen manifest remains valid (ref emits nothing
 on stderr, so the narrowed predicate changes nothing for honest builds).
 
-Verified-correct per reviewer (no action): score.py arithmetic + all 9
-selftest vectors (hand-recomputed), rpartition parsing, Track A weight
-sum = 1.00, mode-aware semantics vs NOTES.md.
+## Round 2 (commit 8dacfac verification) and round 3 (commit 5dca6b0)
+
+Round 2 closed findings 1-4, 6, 7 and surfaced:
+
+- **NEW-1 BLOCKER (deployment-breaking, fail-closed)**: the verifier's
+  measurement tools still lived at $ENVD/tools — a path that never exists
+  in-container — so Track B would exit 4 with no reward.json on every
+  harness trial. Also Track A called n810-run/n810-lint from PATH
+  (/usr/local/bin, agent-writable in-container).
+- Finding 5 was half-done (the Track A runner copy raced the stderr fix —
+  parallel tool-call ordering).
+- Finding 7 wrinkle: unmeasured variants entered the min as 0 fps.
+
+Round 3 (final, 48s) verdicts after 5dca6b0: all three CLOSED.
+- Tools now ship in tests/tools/ (both tracks), absolute paths, existence
+  checks before first use; zero $ENVD / bare-PATH tool calls remain; tool
+  copies byte-identical to the device-validated environment/tools versions.
+- Runners byte-identical, stdout-only, #diag line.
+- Measured-only min has no cheat vector: credited fps is always a
+  stream-verified measurement of a variant the binary actually executed
+  correctly (golden fresh per run, DIV-slope guard); exclusion can only
+  rescue honest builds, never inflate beyond a verified value.
+
+**Overall: Track B deployable in-harness.** Outstanding items are
+pre-existing operational to-dos (anchor staging at /opt/n810/anchor,
+device home-dir reset) — not verifier defects.
 
 
 ## Reviewer prompt (copy-paste into a fresh reviewer agent)
