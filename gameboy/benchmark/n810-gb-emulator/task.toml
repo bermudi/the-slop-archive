@@ -1,0 +1,40 @@
+schema_version = "1.4"
+
+# Collect the agent's work tree — the code IS the result. Without this the
+# container's /work vanishes when the trial ends.
+artifacts = [{ source = "/work", destination = "work" }]
+
+[task]
+name = "local/n810-gb-emulator"
+version = "1.0.0"
+description = "Write a Game Boy emulator from scratch and ship it as a real Maemo app on a physical Nokia N810"
+authors = [{ name = "daniel" }]
+keywords = ["emulator", "arm", "embedded", "retro", "hardware"]
+
+[metadata]
+category = "systems-programming"
+difficulty_explanation = "Requires correct ARMv6 codegen, era-appropriate APIs (SDL 1.2, 16bpp), and verification against real hardware"
+
+[verifier]
+timeout_sec = 600.0
+
+[agent]
+timeout_sec = 7200.0
+# Agent phase: the agent process runs INSIDE this container, so it needs
+# its model API. LAN + api.z.ai only — no source fetch during the run.
+network_mode = "allowlist"
+allowed_hosts = ["192.168.0.0/24", "api.z.ai"]
+
+[environment]
+# Baseline applies during agent SETUP (harbor installs the agent CLI in the
+# container: apt, nvm->nodejs.org, npm registry). Nothing else runs then.
+network_mode = "allowlist"
+allowed_hosts = ["192.168.0.0/24", "api.z.ai", "deb.debian.org", "security.debian.org", "raw.githubusercontent.com", "github.com", "codeload.github.com", "objects.githubusercontent.com", "nodejs.org", "registry.npmjs.org"]
+build_timeout_sec = 600.0
+os = "linux"
+cpus = 2
+memory_mb = 2048
+storage_mb = 10240
+
+# No [verifier.environment] — verifier shares the agent container. A separate
+# verifier env would need its own environment definition under tests/.

@@ -1,5 +1,9 @@
 schema_version = "1.4"
 
+# Collect the agent's work tree — the code IS the result. Without this the
+# container's /work vanishes when the trial ends.
+artifacts = [{ source = "/work", destination = "work" }]
+
 [task]
 name = "local/n810-gb-optimize"
 version = "1.0.0"

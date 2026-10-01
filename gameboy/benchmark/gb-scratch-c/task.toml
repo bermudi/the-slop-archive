@@ -1,5 +1,10 @@
 schema_version = "1.4"
 
+# Collect the agent's work tree — the code IS the result. Without this the
+# container's /work vanishes when the trial ends, which also kills any
+# transcript-resume story (session jsonl + no files = useless).
+artifacts = [{ source = "/work", destination = "work" }]
+
 [task]
 name = "local/gb-scratch-c"
 version = "1.0.0"
@@ -10,11 +15,6 @@ keywords = ["emulator", "c", "retro", "sdl2"]
 [metadata]
 category = "systems-programming"
 difficulty_explanation = "Full DMG core (CPU, PPU, timers, serial) from documentation alone on a modern toolchain; correctness is content-verified against fresh ROMs"
-
-# Collect the agent's work tree — the code IS the result. Without this the
-# container's /work vanishes when the trial ends, which also kills any
-# transcript-resume story (session jsonl + no files = useless).
-artifacts = [{ source = "/work", destination = "work" }]
 
 [verifier]
 timeout_sec = 900.0
