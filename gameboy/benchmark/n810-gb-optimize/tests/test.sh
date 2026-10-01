@@ -245,7 +245,7 @@ if [ -f "$HL" ]; then
     OUT=$(timeout 900 ssh n810 "cd /home/user/.n810-run/$SUITE && ./suite_run.sh ./hl-bin frames 1200" 2>/dev/null)
     [ -n "$OUT" ] || say "warn: suite produced no output (timeout or staging failure) — grading fail-closed"
     OUT="$OUT" python3 > "$ROMSJSON" <<'PY'
-import json, os
+import json, os, sys
 raw = os.environ.get("OUT", "")
 results, trap = {}, None
 for line in raw.splitlines():
@@ -304,6 +304,17 @@ json.dump({
     "anchor": "$anchor",
 }, open(sys.argv[1], "w"))
 PY
-python3 "$TESTDIR/score.py" "$INPUTS" > /logs/verifier/reward.json
+python3 "$TESTDIR/score.py" "$INPUTS" > /logs/verifier/metrics.json
+# harbor ingests reward.json verbatim as dict[str, float|int] — strings,
+# lists and dicts in score.py's output would raise ValidationError. The full
+# record lives in metrics.json; reward.json gets the numeric subset.
+python3 - <<'PY'
+import json
+m = json.load(open("/logs/verifier/metrics.json"))
+reward = {"reward": m.get("score", 0.0)}
+reward.update({k: v for k, v in m.items()
+               if isinstance(v, (int, float)) and not isinstance(v, bool)})
+json.dump(reward, open("/logs/verifier/reward.json", "w"), indent=2)
+PY
 cat /logs/verifier/reward.json
 say "done"

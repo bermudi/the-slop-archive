@@ -262,7 +262,7 @@ if [ -n "$BIN" ]; then
     OUT=$(timeout 600 ssh n810 "cd /home/user/.n810-run/$SUITE && ./suite_run.sh ../$HLN seconds 10" 2>/dev/null)
     [ -n "$OUT" ] || say "warn: suite produced no output (timeout or staging failure) — grading fail-closed"
     OUT="$OUT" python3 > "$WORK/roms.json" <<'PY'
-import json, os
+import json, os, sys
 raw = os.environ.get("OUT", "")
 results, trap = {}, None
 for line in raw.splitlines():
@@ -316,7 +316,7 @@ print(1 if sig in out else 0)" "$WORK/chal-headless.out" "$WORK/expect.sig" 2>/d
 fi
 
 # ---------- reward -----------------------------------------------------------
-python3 - <<PY > /logs/verifier/reward.json
+python3 - <<PY
 import json
 metrics = {
   "artifact_present": $m_artifact,
@@ -352,6 +352,13 @@ w = {"artifact_present":.05,"lint_clean":.10,"installs":.10,"runs_alive":.15,
      "visible_output":.10,"renders_content":.25,"audio_works":.05,
      "headless_works":.05,"test_roms":.15}
 metrics["score"] = round(sum(w[k]*metrics[k] for k in w), 3)
+# Full record (strings, dicts) is report-only. harbor ingests reward.json
+# verbatim as dict[str, float|int] — non-numeric values raise ValidationError.
+open("/logs/verifier/metrics.json","w").write(json.dumps(metrics, indent=2))
+reward = {"reward": metrics["score"]}
+reward.update({k: v for k, v in metrics.items()
+               if isinstance(v, (int, float)) and not isinstance(v, bool)})
+open("/logs/verifier/reward.json","w").write(json.dumps(reward, indent=2))
 print(json.dumps(metrics))
 PY
 cat /logs/verifier/reward.json

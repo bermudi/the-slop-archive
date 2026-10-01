@@ -1,0 +1,20 @@
+{
+  "providers": {
+    "openrouter": {
+      "baseUrl": "https://api.kilo.ai/api/gateway",
+      "api": "openai-completions",
+      "apiKeyEnv": "KILO_API_KEY",
+      "models": [
+        {
+          "id": "stealth/space-bunny-alpha",
+          "name": "Space Bunny Alpha",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 1000000,
+          "maxTokens": 524288,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}
