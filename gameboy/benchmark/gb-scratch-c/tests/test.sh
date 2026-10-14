@@ -11,6 +11,9 @@ exec > >(tee -a "$VLOG") 2>&1
 say(){ echo "[verifier] $*"; }
 WORK="${WORK:-/tmp/verify}"; mkdir -p "$WORK"
 TESTDIR="$(cd "$(dirname "$0")" && pwd)"
+# The trusted core's gb_save() unconditionally writes <rom>.sav next to the
+# ROM — never let it (or a saving submission) write into tests/roms.
+ROMSRC="$WORK/roms"; mkdir -p "$ROMSRC"; cp -a "$TESTDIR/roms/." "$ROMSRC/"
 
 m_artifact=0; m_windowed=0; m_headless=0; m_match=0; m_anim=0; m_paced=0; m_acid=0
 chal_sig=no; windowed_note="not attempted"
@@ -62,7 +65,7 @@ if [ -n "$REF_BIN" ]; then
     # ---- dmg-acid2 golden: sprite/PPU torture test -------------------------
     # Renders sprite priority, 8x16, flips, OAM overlap — the bug class a
     # BG-only challenge cannot see (e.g. missing-eyes Pokemon title screen).
-    timeout 60 "$REF_BIN" "$TESTDIR/roms/dmg-acid2.gb" --frames 120 \
+    timeout 60 "$REF_BIN" "$ROMSRC/dmg-acid2.gb" --frames 120 \
         --ppm "$WORK/acid_ref.ppm" >/dev/null 2>&1
     if [ -s "$WORK/acid_ref.ppm" ]; then
         if cmp -s "$WORK/acid_ref.ppm" "$TESTDIR/golden/dmg-acid2.ppm"; then
@@ -96,7 +99,7 @@ fi
 
 # ---- dmg-acid2 render (sprite/PPU correctness) ------------------------------
 if [ "$m_artifact" = 1 ] && [ -n "$REF_BIN" ] && [ -s "$WORK/acid_ref.ppm" ]; then
-    timeout 90 "$BIN" --headless "$TESTDIR/roms/dmg-acid2.gb" --seconds 5 \
+    timeout 90 "$BIN" --headless "$ROMSRC/dmg-acid2.gb" --seconds 5 \
         --frame-out "$WORK/agent_acid.ppm" >/dev/null 2>&1
     if [ -s "$WORK/agent_acid.ppm" ] && \
        python3 "$TESTDIR/frame_check.py" match "$WORK/agent_acid.ppm" "$WORK/acid_ref.ppm"; then
@@ -109,9 +112,9 @@ fi
 
 # ---- animation / non-blank check on demo.gb --------------------------------
 if [ "$m_artifact" = 1 ]; then
-    timeout 90 "$BIN" --headless "$TESTDIR/roms/demo.gb" --seconds 5 \
+    timeout 90 "$BIN" --headless "$ROMSRC/demo.gb" --seconds 5 \
         --frame-out "$WORK/demo_a.ppm" >/dev/null 2>&1
-    timeout 90 "$BIN" --headless "$TESTDIR/roms/demo.gb" --seconds 12 \
+    timeout 90 "$BIN" --headless "$ROMSRC/demo.gb" --seconds 12 \
         --frame-out "$WORK/demo_b.ppm" >/dev/null 2>&1
     if [ -s "$WORK/demo_a.ppm" ] && [ -s "$WORK/demo_b.ppm" ] && \
        python3 "$TESTDIR/frame_check.py" anim "$WORK/demo_a.ppm" "$WORK/demo_b.ppm"; then
@@ -130,7 +133,7 @@ if [ "$m_artifact" = 1 ]; then
         windowed_note="no libSDL2 in ldd"
     fi
     SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
-        timeout --signal=TERM 20 "$BIN" "$TESTDIR/roms/demo.gb" \
+        timeout --signal=TERM 20 "$BIN" "$ROMSRC/demo.gb" \
         >"$WORK/windowed.log" 2>&1
     rc=$?
     if [ "$rc" = 124 ]; then
@@ -148,7 +151,7 @@ if [ "$m_artifact" = 1 ]; then
     # correct emulator must pace itself against wall clock. CPU-fraction is
     # what we can measure without an fps counter in the required interface.
     paced_cpu=""
-    SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy "$BIN" "$TESTDIR/roms/demo.gb" \
+    SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy "$BIN" "$ROMSRC/demo.gb" \
         >"$WORK/paced.log" 2>&1 & ppid=$!
     t0=$(date +%s%N)
     sleep 8
@@ -173,7 +176,7 @@ RESFILE="$WORK/rom_results.txt"; : > "$RESFILE"
 if [ "$m_artifact" = 1 ]; then
     while IFS=$'\t' read -r f want; do
         case "$f" in ''|\#*) continue;; esac
-        OUT="$(timeout 120 "$BIN" --headless "$TESTDIR/roms/$f" --seconds 30 2>/dev/null)"
+        OUT="$(timeout 120 "$BIN" --headless "$ROMSRC/$f" --seconds 30 2>/dev/null)"
         rc=$?
         p=0
         if echo "$OUT" | grep -qE "$want" && [ "$rc" = 0 ]; then p=1; fi
@@ -181,7 +184,7 @@ if [ "$m_artifact" = 1 ]; then
         say "  rom $f -> $p (rc=$rc)"
     done < "$TESTDIR/suite.tsv"
     # trap.gb: diagnostic only — silent-exit protocol, ungradable black-box
-    TO="$(timeout 60 "$BIN" --headless "$TESTDIR/roms/trap.gb" --seconds 30 2>/dev/null)"; trc=$?
+    TO="$(timeout 60 "$BIN" --headless "$ROMSRC/trap.gb" --seconds 30 2>/dev/null)"; trc=$?
     say "  rom trap.gb (diagnostic) rc=$trc bytes=${#TO}"
 fi
 
