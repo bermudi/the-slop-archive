@@ -110,11 +110,22 @@ def build_rom(seed):
     B(0xFE, 0x00)              # cp 0
     JR(0x20, "maploop")
 
+    # --- one OBJ sprite over the background ---
+    # An emulator that never implements sprites still renders the BG frame
+    # perfectly — so the golden MUST contain one. Sprite 0 at OAM[0]:
+    # screen (72,48), tile 5 (already computed above), no priority/flip.
+    # DMG rule, attr=0: non-zero sprite pixels always cover the BG.
+    B(0x3E, 0x40, 0xEA, 0x00, 0xFE)  # ld a,64;  ld (0xFE00),a   ; OAM y
+    B(0x3E, 0x50, 0xEA, 0x01, 0xFE)  # ld a,80;  ld (0xFE01),a   ; OAM x
+    B(0x3E, 0x05, 0xEA, 0x02, 0xFE)  # ld a,5;   ld (0xFE02),a   ; tile idx
+    B(0xAF,       0xEA, 0x03, 0xFE)  # xor a;    ld (0xFE03),a   ; attr=0
+    B(0x3E, 0xE4, 0xE0, 0x48)        # obp0=0xE4 (identity mapping)
+
     # --- display on ---
     B(0x3E, 0xE4, 0xE0, 0x47)  # bgp=0xE4 (identity mapping)
     B(0xAF, 0xE0, 0x42)        # scy=0
     B(0xE0, 0x43)              # scx=0
-    B(0x3E, 0x91, 0xE0, 0x40)  # lcdc=0x91 (LCD+BG on)
+    B(0x3E, 0x93, 0xE0, 0x40)  # lcdc=0x93 (LCD+BG+OBJ 8x8 on)
 
     # --- serial signature: 'C', g1, ~g1, g2, ~g2, 'K' ---
     # g1/g2 are the next two PRNG outputs after the 1280 consumed by the
@@ -196,7 +207,9 @@ def model(seed):
     return tiles, tilemap, sig
 
 def screen(seed, w=160, h=144):
-    """Expected framebuffer: shade 0..3 per pixel (BGP=0xE4 -> identity)."""
+    """Expected framebuffer: shade 0..3 per pixel (BGP=OBP0=0xE4 -> identity).
+    Includes the OAM sprite: tile 5 at screen (72,48), attr 0 — non-zero
+    sprite pixels cover the BG (OBP0 identity, so sprite keeps its color)."""
     tiles, tilemap, _ = model(seed)
     px = bytearray(w * h)
     for y in range(h):
@@ -207,6 +220,15 @@ def screen(seed, w=160, h=144):
             b0 = tiles[t * 16 + (y % 8) * 2]
             b1 = tiles[t * 16 + (y % 8) * 2 + 1]
             px[y * w + x] = (((b1 >> bit) & 1) << 1) | ((b0 >> bit) & 1)
+    # sprite overlay: tile 5, 8x8, at screen (72,48)
+    for row in range(8):
+        b0 = tiles[5 * 16 + row * 2]
+        b1 = tiles[5 * 16 + row * 2 + 1]
+        for col in range(8):
+            bit = 7 - col
+            c = (((b1 >> bit) & 1) << 1) | ((b0 >> bit) & 1)
+            if c:
+                px[(48 + row) * w + 72 + col] = c
     return px
 
 def golden_ppm(seed):

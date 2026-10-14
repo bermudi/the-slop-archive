@@ -4,14 +4,15 @@
 # the binary's serial output and final LCD frame are compared against what a
 # vendored trusted reference emulator computes for the SAME ROM.
 set -u
-mkdir -p /logs/verifier
-VLOG=/logs/verifier/verifier.log
+LOGS="${LOGS:-/logs}"; DIST="${DIST:-/work/dist}"; export LOGS
+mkdir -p "$LOGS/verifier"
+VLOG=$LOGS/verifier/verifier.log
 exec > >(tee -a "$VLOG") 2>&1
 say(){ echo "[verifier] $*"; }
-DIST=/work/dist; WORK=/tmp/verify; mkdir -p "$WORK"
+WORK="${WORK:-/tmp/verify}"; mkdir -p "$WORK"
 TESTDIR="$(cd "$(dirname "$0")" && pwd)"
 
-m_artifact=0; m_windowed=0; m_headless=0; m_match=0; m_anim=0
+m_artifact=0; m_windowed=0; m_headless=0; m_match=0; m_anim=0; m_paced=0
 chal_sig=no; windowed_note="not attempted"
 
 BIN="$DIST/gbemu"
@@ -113,6 +114,31 @@ if [ "$m_artifact" = 1 ]; then
     fi
     say "windowed: $windowed_note"
     tail -3 "$WORK/windowed.log" | sed 's/^/  winlog: /'
+
+    # ---- pacing proxy -----------------------------------------------------
+    # A DMG emu paced at ~59.7fps idles between frames; an unthrottled one
+    # burns a full core. Under the dummy driver there is no vsync, so a
+    # correct emulator must pace itself against wall clock. CPU-fraction is
+    # what we can measure without an fps counter in the required interface.
+    paced_cpu=""
+    SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy "$BIN" "$TESTDIR/roms/demo.gb" \
+        >"$WORK/paced.log" 2>&1 & ppid=$!
+    t0=$(date +%s%N)
+    sleep 8
+    if [ -d "/proc/$ppid" ]; then
+        ticks=$(awk '{print $14+$15}' "/proc/$ppid/stat" 2>/dev/null)
+        t1=$(date +%s%N)
+        kill -TERM "$ppid" 2>/dev/null; wait "$ppid" 2>/dev/null
+        if [ -n "$ticks" ]; then
+            paced_cpu=$(python3 -c "print(round(100*$ticks*1e9/($t1-$t0)/$(getconf CLK_TCK),1))")
+            # <45% of one core = paced; an idle-paced DMG emu is single digits
+            python3 -c "import sys; sys.exit(0 if $paced_cpu <= 45 else 1)" && m_paced=1
+        fi
+        say "pacing: windowed CPU ${paced_cpu:-?}% (pass <=45%)"
+    else
+        wait "$ppid" 2>/dev/null
+        say "pacing: process exited before sample window"
+    fi
 fi
 
 # ---- scored headless suite --------------------------------------------------
@@ -151,7 +177,7 @@ elif res:
 frac = (sum(res.values()) / len(res)) if res else 0.0
 env = {"results": res, "fraction": frac,
        "passed": sum(res.values()), "total": len(res)}
-open("/logs/verifier/roms.json", "w").write(json.dumps(env))
+open(os.environ["LOGS"] + "/verifier/roms.json", "w").write(json.dumps(env))
 json.dump(env, sys.stdout)
 PYEOF
 )
@@ -160,18 +186,20 @@ ROMTALLY=$(echo "$SCORE" | python3 -c 'import json,sys; d=json.load(sys.stdin); 
 echo "$SCORE" | python3 -m json.tool | sed 's/^/  /'
 
 python3 - <<PYEOF
-import json
+import json, os
 frac = float("$FRAC")
-m = dict(artifact=$m_artifact, windowed=$m_windowed, headless=$m_headless,
-         match=$m_match, anim=$m_anim)
-score = (0.05*m["artifact"] + 0.15*m["windowed"] + 0.10*m["headless"]
-         + 0.25*frac + 0.30*m["match"] + 0.15*m["anim"])
+m = dict(artifact=$m_artifact, windowed=$m_windowed, paced=$m_paced,
+         headless=$m_headless, match=$m_match, anim=$m_anim)
+score = (0.05*m["artifact"] + 0.10*m["windowed"] + 0.05*m["paced"]
+         + 0.10*m["headless"] + 0.25*frac + 0.30*m["match"] + 0.15*m["anim"])
 # Full diagnostic record — report-only, NOT parsed by harbor (non-numeric
 # values would break VerifierResult's {key: number} schema).
 metrics = {
   "artifact_present": m["artifact"],
   "windowed_alive": m["windowed"],
   "windowed_note": "$windowed_note",
+  "paced": m["paced"],
+  "paced_cpu_pct": float("${paced_cpu:-0}"),
   "headless_challenge_sig": "$chal_sig",
   "render_match_challenge": m["match"],
   "render_anim_demo": m["anim"],
@@ -181,12 +209,12 @@ metrics = {
   "binary": "${BIN:-}",
   "score": round(score, 4),
 }
-open("/logs/verifier/metrics.json", "w").write(json.dumps(metrics, indent=2))
+open(os.environ["LOGS"] + "/verifier/metrics.json", "w").write(json.dumps(metrics, indent=2))
 # reward.json: numeric values only — harbor ingests it verbatim as
 # dict[str, float|int].
 reward = {"reward": round(score, 4)}
 reward.update({k: v for k, v in metrics.items()
                if isinstance(v, (int, float)) and not isinstance(v, bool)})
-open("/logs/verifier/reward.json", "w").write(json.dumps(reward, indent=2))
+open(os.environ["LOGS"] + "/verifier/reward.json", "w").write(json.dumps(reward, indent=2))
 print(json.dumps(metrics, indent=2))
 PYEOF

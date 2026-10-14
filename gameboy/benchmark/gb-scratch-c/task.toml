@@ -25,7 +25,7 @@ timeout_sec = 7200.0
 # its model API — and nothing else. Add the provider's host for whichever
 # model a run uses (or pass --allow-agent-host at launch).
 network_mode = "allowlist"
-allowed_hosts = ["openrouter.ai", "api.kilo.ai"]
+allowed_hosts = ["openrouter.ai", "api.kilo.ai", "opencode.ai"]
 
 [environment]
 # Baseline applies during agent SETUP (harbor installs the agent CLI in the
