@@ -1,0 +1,20 @@
+# Scored headless suite. Columns (TAB-separated): file, want-regex.
+# A row passes iff the want-regex appears in --headless serial output AND
+# the process exits 0. The challenge-ROM signature is counted separately in
+# test.sh. trap.gb is DIAGNOSTIC-ONLY (mooneye ld b,b exit protocol, no
+# serial signature ever — a black-box serial runner cannot grade it).
+01-special.gb	Passed
+02-interrupts.gb	Passed
+03-op sp,hl.gb	Passed
+04-op r,imm.gb	Passed
+05-op rp.gb	Passed
+06-ld r,r.gb	Passed
+07-jr,jp,call,ret,rst.gb	Passed
+08-misc instrs.gb	Passed
+09-op r,r.gb	Passed
+10-bit ops.gb	Passed
+11-op a,(hl).gb	Passed
+alu.gb	PASS
+hello.gb	PASS
+intr.gb	PASS
+jr.gb	PASS

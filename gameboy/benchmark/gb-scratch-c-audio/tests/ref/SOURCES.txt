@@ -1,0 +1,12 @@
+# Exact .c set compiled into the golden core. Harbor's tests/ upload is a
+# same-name-overwrite MERGE: agent-planted NEW files (e.g. zz_evil.c)
+# survive it. The verifier refuses to build if ref/*.c != this list.
+# (.h files need no list: a planted new header is inert unless some listed
+# .c includes it, and a same-named header gets overwritten by the upload.)
+apu.c
+cpu.c
+gb.c
+mmu.c
+plat_headless.c
+ppu.c
+timer.c

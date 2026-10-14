@@ -1,0 +1,41 @@
+schema_version = "1.4"
+
+# Collect the agent's work tree — the code IS the result. Without this the
+# container's /work vanishes when the trial ends, which also kills any
+# transcript-resume story (session jsonl + no files = useless).
+artifacts = [{ source = "/work", destination = "work" }]
+
+[task]
+name = "local/gb-scratch-c-audio"
+version = "1.0.0"
+description = "Write a Game Boy DMG emulator from scratch in C for modern Linux, including the APU (SDL2 window + sound, verified headless mode with WAV capture)"
+authors = [{ name = "daniel" }]
+keywords = ["emulator", "c", "retro", "sdl2", "audio", "apu"]
+
+[metadata]
+category = "systems-programming"
+difficulty_explanation = "Full DMG core (CPU, PPU, timers, serial, APU) from documentation alone on a modern toolchain; correctness is content-verified against fresh ROMs including a seeded audio tone sequence checked spectrally"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 7200.0
+# Agent phase: the agent process runs INSIDE this container, so it needs
+# its model API — and nothing else. Add the provider's host for whichever
+# model a run uses (or pass --allow-agent-host at launch).
+network_mode = "allowlist"
+allowed_hosts = ["openrouter.ai", "api.kilo.ai", "opencode.ai"]
+
+[environment]
+# Baseline applies during agent SETUP (harbor installs the agent CLI in the
+# container: apt, nvm->nodejs.org, npm registry). Nothing else runs then.
+network_mode = "allowlist"
+allowed_hosts = ["openrouter.ai", "api.kilo.ai", "deb.debian.org", "security.debian.org", "raw.githubusercontent.com", "github.com", "codeload.github.com", "objects.githubusercontent.com", "nodejs.org", "registry.npmjs.org"]
+build_timeout_sec = 600.0
+os = "linux"
+cpus = 2
+memory_mb = 2048
+storage_mb = 10240
+
+# No [verifier.environment] — verifier shares the agent container.
