@@ -12,7 +12,7 @@ say(){ echo "[verifier] $*"; }
 WORK="${WORK:-/tmp/verify}"; mkdir -p "$WORK"
 TESTDIR="$(cd "$(dirname "$0")" && pwd)"
 
-m_artifact=0; m_windowed=0; m_headless=0; m_match=0; m_anim=0; m_paced=0
+m_artifact=0; m_windowed=0; m_headless=0; m_match=0; m_anim=0; m_paced=0; m_acid=0
 chal_sig=no; windowed_note="not attempted"
 
 BIN="$DIST/gbemu"
@@ -58,6 +58,20 @@ if [ -n "$REF_BIN" ]; then
         fi
     fi
     say "challenge seed: $SEED  expected serial sig: ${EXPECT:-none}"
+
+    # ---- dmg-acid2 golden: sprite/PPU torture test -------------------------
+    # Renders sprite priority, 8x16, flips, OAM overlap — the bug class a
+    # BG-only challenge cannot see (e.g. missing-eyes Pokemon title screen).
+    timeout 60 "$REF_BIN" "$TESTDIR/roms/dmg-acid2.gb" --frames 120 \
+        --ppm "$WORK/acid_ref.ppm" >/dev/null 2>&1
+    if [ -s "$WORK/acid_ref.ppm" ]; then
+        if cmp -s "$WORK/acid_ref.ppm" "$TESTDIR/golden/dmg-acid2.ppm"; then
+            say "instrument validity: reference renders dmg-acid2 canonically"
+        else
+            say "FATAL: reference failed dmg-acid2 — instrument invalid"
+            REF_BIN=""
+        fi
+    fi
 fi
 
 # ---- headless challenge signature -----------------------------------------
@@ -77,6 +91,19 @@ if [ "$m_artifact" = 1 ] && [ -n "$REF_BIN" ] && [ -n "$EXPECT" ]; then
         say "challenge frame matches golden (normalized shades, >=98%)"
     else
         say "challenge frame missing or mismatched"
+    fi
+fi
+
+# ---- dmg-acid2 render (sprite/PPU correctness) ------------------------------
+if [ "$m_artifact" = 1 ] && [ -n "$REF_BIN" ] && [ -s "$WORK/acid_ref.ppm" ]; then
+    timeout 90 "$BIN" --headless "$TESTDIR/roms/dmg-acid2.gb" --seconds 5 \
+        --frame-out "$WORK/agent_acid.ppm" >/dev/null 2>&1
+    if [ -s "$WORK/agent_acid.ppm" ] && \
+       python3 "$TESTDIR/frame_check.py" match "$WORK/agent_acid.ppm" "$WORK/acid_ref.ppm"; then
+        m_acid=1
+        say "dmg-acid2 frame matches golden"
+    else
+        say "dmg-acid2 frame missing or mismatched"
     fi
 fi
 
@@ -189,9 +216,10 @@ python3 - <<PYEOF
 import json, os
 frac = float("$FRAC")
 m = dict(artifact=$m_artifact, windowed=$m_windowed, paced=$m_paced,
-         headless=$m_headless, match=$m_match, anim=$m_anim)
+         headless=$m_headless, match=$m_match, acid=$m_acid, anim=$m_anim)
 score = (0.05*m["artifact"] + 0.10*m["windowed"] + 0.05*m["paced"]
-         + 0.10*m["headless"] + 0.25*frac + 0.30*m["match"] + 0.15*m["anim"])
+         + 0.10*m["headless"] + 0.25*frac + 0.25*m["match"]
+         + 0.10*m["acid"] + 0.10*m["anim"])
 # Full diagnostic record — report-only, NOT parsed by harbor (non-numeric
 # values would break VerifierResult's {key: number} schema).
 metrics = {
@@ -202,6 +230,7 @@ metrics = {
   "paced_cpu_pct": float("${paced_cpu:-0}"),
   "headless_challenge_sig": "$chal_sig",
   "render_match_challenge": m["match"],
+  "render_dmg_acid2": m["acid"],
   "render_anim_demo": m["anim"],
   "test_roms": "$ROMTALLY",
   "test_roms_fraction": round(frac, 4),
