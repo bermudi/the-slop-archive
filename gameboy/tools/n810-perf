@@ -1,0 +1,90 @@
+#!/bin/bash
+# n810-perf — measure Game Boy emulator speed on the real N810 without
+# trusting the binary to self-report.
+#
+# Two measurements:
+#   --headless <bin>   run  <bin> bench.gb --frames N  on device, wall-timed.
+#                      Emulated fps = frames / wall seconds. Cross-checked
+#                      against the bench ROM's per-vblank serial ticks.
+#   --app <bin>        run the fbdev app for N secs with Xomap frozen;
+#                      realized fps = serial ticks / secs (the ROM emits one
+#                      '*' per vblank — hardware-paced, not self-reported);
+#                      %CPU sampled from /proc/<pid>/stat.
+#
+# Usage:
+#   n810-perf --headless <binary> [--frames N]
+#   n810-perf --app <binary> [--secs N]
+#   n810-perf --headless <binary> --app <binary2>   (both)
+set -u
+
+SECS=30
+FRAMES=3000
+HBIN=""; ABIN=""
+BENCH=/opt/n810/roms/bench.gb
+[ -f "$BENCH" ] || BENCH="$(dirname "$0")/../roms/bench.gb"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --headless) HBIN="$2"; shift 2 ;;
+        --app)      ABIN="$2"; shift 2 ;;
+        --secs)     SECS="$2"; shift 2 ;;
+        --frames)   FRAMES="$2"; shift 2 ;;
+        --bench)    BENCH="$2"; shift 2 ;;
+        -*) echo "unknown flag $1" >&2; exit 2 ;;
+        *) echo "usage: n810-perf [--headless B] [--app B] [--secs N] [--frames N]" >&2; exit 2 ;;
+    esac
+done
+[ -n "$HBIN" ] || [ -n "$ABIN" ] || { echo "need --headless and/or --app" >&2; exit 2; }
+
+i=0
+until ssh n810 "mkdir /home/user/.bench-lock" 2>/dev/null; do
+    i=$((i+1)); [ $i -gt 120 ] && { echo "device lock timeout" >&2; exit 3; }
+    sleep 5
+done
+trap 'ssh n810 "rmdir /home/user/.bench-lock" 2>/dev/null' EXIT
+
+ssh n810 "mkdir -p ~/.n810-run" || exit 3
+scp -q "$BENCH" n810:/home/user/.n810-run/bench.gb || exit 3
+
+# ---------- headless throughput ----------------------------------------------
+if [ -n "$HBIN" ]; then
+    H=/home/user/.n810-run/$(basename "$HBIN")
+    scp -q "$HBIN" "n810:$H" || exit 3
+    ssh n810 "chmod +x $H; S=\$(date +%s); $H /home/user/.n810-run/bench.gb --frames $FRAMES > $H.hlog 2>&1; E=\$(date +%s); echo \"\$S \$E\" > $H.htime" \
+        || { echo "headless run failed" >&2; exit 3; }
+    ST=$(ssh n810 "cat $H.htime")
+    scp -q "n810:$H.hlog" /tmp/n810-perf-hlog.$$
+    TICKS=$(tr -cd '*' < /tmp/n810-perf-hlog.$$ | wc -c)
+    rm -f /tmp/n810-perf-hlog.$$
+    S=$(echo "$ST" | awk '{print $1}'); E=$(echo "$ST" | awk '{print $2}')
+    ELAPSED=$((E - S)); [ "$ELAPSED" -lt 1 ] && ELAPSED=1
+    python3 -c "
+f=$FRAMES; e=$ELAPSED; t=$TICKS
+print(f'headless: {f} frames in {e}s = {f/e:.1f} fps ({f/e/59.7275:.2f}x realtime)')
+print(f'          serial ticks seen: {t} (expect ~{f})')"
+fi
+
+# ---------- app realized fps + %CPU ------------------------------------------
+if [ -n "$ABIN" ]; then
+    A=/home/user/.n810-run/$(basename "$ABIN")
+    scp -q "$ABIN" "n810:$A" || exit 3
+    ssh n810 "X=\$(pidof Xomap); printf 'kill -STOP '\$X'; chmod +x $A; $A /home/user/.n810-run/bench.gb > $A.alog 2>&1 & EP=\$!; sleep 2; J1=\$(awk \"{print \\\$14+\\\$15}\" /proc/\$EP/stat 2>/dev/null); T1=\$(date +%%s); sleep $SECS; J2=\$(awk \"{print \\\$14+\\\$15}\" /proc/\$EP/stat 2>/dev/null); T2=\$(date +%%s); kill -0 \$EP 2>/dev/null && echo ALIVE > $A.status || echo DEAD > $A.status; dd if=/dev/fb0 bs=1600 count=480 of=$A.fb 2>/dev/null; kill \$EP 2>/dev/null; kill -CONT '\$X'; echo \"\$J1 \$J2 \$T1 \$T2\" > $A.atime; exit\n' | sudo gainroot" \
+        || { echo "app run failed" >&2; exit 3; }
+    scp -q "n810:$A.alog" /tmp/n810-perf-alog.$$
+    scp -q "n810:$A.fb" /tmp/n810-perf-fb.$$
+    AT=$(ssh n810 "cat $A.atime")
+    STATUS=$(ssh n810 "cat $A.status")
+    TICKS=$(tr -cd '*' < /tmp/n810-perf-alog.$$ | wc -c)
+    rm -f /tmp/n810-perf-alog.$$
+    J1=$(echo "$AT"|awk '{print $1}'); J2=$(echo "$AT"|awk '{print $2}')
+    T1=$(echo "$AT"|awk '{print $3}'); T2=$(echo "$AT"|awk '{print $4}')
+    python3 -c "
+j1,j2,t1,t2 = ${J1:-0},${J2:-0},${T1:-0},${T2:-1}
+wall = max(t2-t1,1); ticks=$TICKS
+print(f'app: {ticks} ticks in {wall}s = {ticks/wall:.1f} fps realized (59.73 target)')
+if j2 > j1:
+    print(f'     cpu: {(j2-j1)/wall:.0f}% of one core during run')  # 100Hz jiffies → jiffy/s = %CPU
+print(f'     proc: $STATUS')"
+    mv /tmp/n810-perf-fb.$$ /tmp/n810-perf.fb 2>/dev/null
+    echo "     fb dump: /tmp/n810-perf.fb"
+fi
