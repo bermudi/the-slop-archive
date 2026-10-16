@@ -65,14 +65,19 @@ if [ -n "$REF_BIN" ]; then
     # ---- dmg-acid2 golden: sprite/PPU torture test -------------------------
     # Renders sprite priority, 8x16, flips, OAM overlap — the bug class a
     # BG-only challenge cannot see (e.g. missing-eyes Pokemon title screen).
+    # The golden is the CANONICAL image from mattcurrie/dmg-acid2
+    # (img/reference-dmg.png), not a reference-core render: the vendored ref
+    # has a window line-counter bug and produces the win-line-counter failure
+    # image byte-exactly (verified vs the failure gallery). Ref render kept
+    # for diagnostics only.
     timeout 60 "$REF_BIN" "$ROMSRC/dmg-acid2.gb" --frames 120 \
         --ppm "$WORK/acid_ref.ppm" >/dev/null 2>&1
     if [ -s "$WORK/acid_ref.ppm" ]; then
-        if cmp -s "$WORK/acid_ref.ppm" "$TESTDIR/golden/dmg-acid2.ppm"; then
+        if python3 "$TESTDIR/frame_check.py" match "$WORK/acid_ref.ppm" \
+                "$TESTDIR/golden/dmg-acid2.ppm" >/dev/null 2>&1; then
             say "instrument validity: reference renders dmg-acid2 canonically"
         else
-            say "FATAL: reference failed dmg-acid2 — instrument invalid"
-            REF_BIN=""
+            say "note: reference deviates from canonical dmg-acid2 (known win-line-counter defect); golden stays canonical"
         fi
     fi
 fi
@@ -98,11 +103,13 @@ if [ "$m_artifact" = 1 ] && [ -n "$REF_BIN" ] && [ -n "$EXPECT" ]; then
 fi
 
 # ---- dmg-acid2 render (sprite/PPU correctness) ------------------------------
-if [ "$m_artifact" = 1 ] && [ -n "$REF_BIN" ] && [ -s "$WORK/acid_ref.ppm" ]; then
+# Compared against the canonical image, not the reference render.
+if [ "$m_artifact" = 1 ] && [ -s "$TESTDIR/golden/dmg-acid2.ppm" ]; then
     timeout 90 "$BIN" --headless "$ROMSRC/dmg-acid2.gb" --seconds 5 \
         --frame-out "$WORK/agent_acid.ppm" >/dev/null 2>&1
     if [ -s "$WORK/agent_acid.ppm" ] && \
-       python3 "$TESTDIR/frame_check.py" match "$WORK/agent_acid.ppm" "$WORK/acid_ref.ppm"; then
+       python3 "$TESTDIR/frame_check.py" match "$WORK/agent_acid.ppm" \
+           "$TESTDIR/golden/dmg-acid2.ppm"; then
         m_acid=1
         say "dmg-acid2 frame matches golden"
     else

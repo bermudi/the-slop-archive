@@ -549,16 +549,30 @@ CPU-fraction under the dummy SDL driver.
 Weights: `.05 artifact + .10 windowed + .05 paced + .10 serial-sig +
 .25 ROM-suite + .25 challenge-render + .10 dmg-acid2 + .10 anim`.
 
-### Leaderboard (hardened verifier, acid2 era)
+### Leaderboard (hardened verifier, canonical acid2)
 
-| model | score | ROMs | challenge render | acid2 | paced | serial sig |
+| model | score | ROMs | challenge render | acid2 (canonical) | paced | serial sig |
 |---|---|---|---|---|---|---|
-| **cat-jam-free** (opencode zen, keyless) | **0.95** | 16/16 | ✓ byte-exact | ✓ | ✗ ~52% CPU unthrottled | ✓* |
-| space-bunny (pi, via kilo gw) | 0.7844 | 15/16 | ✓ | ✗ mouth/edge artifacts | ✓ 8% | ✗ |
-| ling-3.1-flash (pi, via kilo) | 0.6125 | 4/16 | ✓ | ✗ | ✓ 7.7% | ✗ |
+| **cat-jam-free** (opencode zen, keyless) | **0.85** | 16/16 | ✓ byte-exact | ✗ 96.40% | ✗ ~52% CPU unthrottled | ✓* |
+| space-bunny (pi, via kilo gw) | 0.7844 | 15/16 | ✓ | ✗ 97.67% | ✓ 8% | ✗ |
+| ling-3.1-flash (pi, via kilo) | 0.6125 | 4/16 | ✓ | ✗ 89.77% | ✓ 7.7% | ✗ |
+| *(calibration)* **gambatte-psr shim** on audio track | **1.00** | 16/16 | ✓ | ✓ 100% | ✓ 1.2% | ✓ |
 
 \* cat-jam's serial-sig is *nondeterministic* — failed its original run,
 passed the rescore. Timing-edge bug, not a missing feature.
+
+**2026-10-16 correction — the acid2 golden was self-referential.** The baked
+golden had been generated *by the vendored reference core*, which turns out
+to render the `win-line-counter` failure image byte-exactly (verified against
+mattcurrie/dmg-acid2's failure gallery). A gambatte-psr shim — pixel-perfect
+against the canonical `reference-dmg.png` — scored 96.45% vs the buggy golden
+and "failed". Golden now = canonical image; the ref render is diagnostic-only.
+Impact: cat-jam loses its acid2 point (0.95→0.85); its render deviates from
+canonical almost identically to our ref (96.40% vs 96.45%), i.e. it shares
+the same window line-counter bug. Seeded-challenge and dmg_sound goldens are
+unaffected (challenge ROM uses LCDC=0x93 — window never enabled; dmg_sound is
+scored by live ref-vs-submission comparison, which surfaced no divergence on
+the 3 scored ROMs).
 
 As-run (pre-hardening) scores: cat-jam 0.8844, space-bunny 0.7344,
 ling 0.7125 — the ladder moved when pacing and acid2 got teeth.
@@ -570,9 +584,10 @@ ling 0.7125 — the ladder moved when pacing and acid2 got teeth.
   them (all emit the first and last only). blargg's polled serial with gaps
   doesn't catch it. A systematic shared blind spot.
 - **acid2 caught real sprite bugs** space-bunny's BG-perfect render hid —
-  yet cat-jam *passed* acid2 while still losing Pikachu's eyes in Pokémon
-  Yellow. The residual gap between "passes the test ROM" and "runs a real
-  game" persists; real-ROM visual defects need yet deeper coverage.
+  and under the canonical golden it catches the window line-counter bug that
+  cat-jam shares with our reference core. Yet even a canonical-acid2 pass is
+  no guarantee for real games: the residual gap between "passes the test
+  ROM" and "runs a real game" persists.
 - **Pacing mattered:** cat-jam burns half a core windowed (unthrottled
   free-run), the other two pace correctly at single-digit CPU.
 - **ling's score is a floor, not a ceiling:** kilo's upstream 429 storm
@@ -613,4 +628,8 @@ Two new rungs (~0.20 of score):
   fails the subtle length/sweep/power edge tests, so the other nine would
   grade the reference's bugs, not the submission's.
 
-Oracle (ref core + shim) scores 1.0 end-to-end.
+Oracle (ref core + shim) scores 1.0 end-to-end under a ref-rendered acid2
+golden; under the canonical golden it honestly loses that rung (~0.90) — the
+core's window line-counter defect. A gambatte-psr shim scores the full 1.0,
+which calibrates the ladder: every rung is achievable by a known-accurate
+emulator, including the serial signature all three models drop.

@@ -53,11 +53,22 @@ rendered verdict).
   challenge ROM, dmg-acid2 golden rung. All tracks declare
   `artifacts = [{source = "/work", destination = "work"}]` at task.toml top
   level — under [metadata] it is silently ignored.
-- Scratch-c leaderboard (acid2-era): cat-jam-free 0.95, space-bunny 0.7844,
-  ling-3.1-flash 0.6125. Details in BENCHMARK-REPORT.md §9.
+- Scratch-c leaderboard (canonical-acid2 era): cat-jam-free 0.85,
+  space-bunny 0.7844, ling-3.1-flash 0.6125. Calibration: a gambatte-psr
+  shim scores **1.0** on gb-scratch-c-audio. Details in BENCHMARK-REPORT.md
+  §9–10.
 - `gb-scratch-c-audio` added 2026-10-15 (commit 90632be): `--wav-out` WAV rung
   (Goertzel spectral check, `tests/audio_check.py` stdlib-only) + dmg_sound
-  rendered-verdict rung. Oracle scores 1.0.
+  rendered-verdict rung. Oracle scores 1.0 vs ref-rendered acid2, ~0.90 vs
+  canonical (ref defect below).
+- **The vendored ref core has a window line-counter bug**: its dmg-acid2
+  render is byte-exact the `win-line-counter` failure image. acid2 golden
+  (`tests/golden/dmg-acid2.ppm`) is therefore the *canonical*
+  `reference-dmg.png` converted to PPM — never re-bake it from a ref render.
+  Seeded-challenge goldens are still live ref renders — safe while the
+  challenge ROM never enables the window (LCDC bit 5); check before adding
+  window use to a scored ROM. dmg_sound is a live ref-vs-submission diff and
+  showed no divergence on the 3 scored ROMs.
 - Preserved submissions: cat-jam `jobs/gbscratch-oc-catjam/*/artifacts/work`,
   ling `jobs/gbscratch-pi-ling31/*/artifacts/work`, space-bunny
   `jobs/gbscratch-pi-spacebunny-v7/work-final` (snapshot + transcript replay).
@@ -79,6 +90,16 @@ rendered verdict).
   gateway was proven (space-bunny clean run) but rate-limited ling hard
   (429 storm killed the run at ~42 min — score is a floor, not a ceiling).
   OpenRouter also 429'd ling that day; its upstream capacity was saturated.
+- Gambatte shim lore (the u64 trap): `gambatte::uint_least32_t` is
+  `unsigned long` = 8 bytes on LP64 — both videoBuf and audioBuf elements.
+  Packed s16 stereo lives in the LOW 32 bits (lo16=SO2, hi16=SO1); elements
+  are delta-integrated at fillBuffer time. Never s16-cast the raw array —
+  compact lo32 of each element first. `runFor` can return up to
+  `samples + 2064` elements — size drain buffers accordingly. Serial tap:
+  weak-symbol hook on the SC-write arm site in `mem/` (SB is the sent byte
+  at arm time). `load(rom, GB::NO_BIOS)` required or boot hangs. PSR fork
+  builds with `-std=gnu++11` (bind1st deprecated-but-present); exclude
+  `cinterface.cpp` (drifted) and `file_zip.cpp`/`unzip/` (dup symbols).
 - Verifier weight sums: scratch-c = .05 artifact + .10 windowed + .05 paced
   + .10 serial-sig + .25 ROM-suite + .25 challenge-render + .10 acid2
   + .10 anim. Audio track = same with .05 sig / .20 suite / .20 render /
