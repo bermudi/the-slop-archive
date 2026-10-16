@@ -1,0 +1,40 @@
+#!/bin/bash
+# n810-build — build a source tree on the N810's own gcc 3.4.4.
+#
+# Why the device is the build machine: its compiler emits exactly the ARMv6
+# its silicon runs, links the real glibc 2.5, and cannot produce the v6K
+# poison that zig cc emits. No cross toolchain can be wronger than this.
+#
+# Dev shims pre-staged in ~/bench-dev/ on the device (SDL 1.2 headers,
+# .so symlinks for -dev-less linking). Equivalent to installing -dev
+# packages — toolchain provisioning, not source changes.
+#
+# Usage: n810-build <srcdir> [make-target] [make-var ...]
+#   e.g. n810-build ./gbemu_n810
+#        n810-build ./gb810 "build/bin/gb810-test" 'CC=gcc -std=gnu99'
+set -u
+
+SRC="${1:?usage: n810-build <srcdir> [make-target] [vars...]}"
+TARGET="${2:-all}"
+shift; [ $# -gt 0 ] && shift || true
+VARS="$*"
+
+NAME=$(basename "$(cd "$SRC" && pwd)")
+
+# Serialize on the device itself — works across containers, unlike local flock.
+i=0
+until ssh n810 "mkdir /home/user/.bench-lock" 2>/dev/null; do
+    i=$((i+1)); [ $i -gt 120 ] && { echo "device lock timeout" >&2; exit 3; }
+    sleep 5
+done
+trap 'ssh n810 "rmdir /home/user/.bench-lock" 2>/dev/null' EXIT
+
+tar czf "/tmp/n810-src-$$.tgz" -C "$SRC" .
+scp -q "/tmp/n810-src-$$.tgz" "n810:/home/user/.n810-src.tgz" || exit 3
+rm -f "/tmp/n810-src-$$.tgz"
+
+ssh n810 "mkdir -p ~/bench/$NAME && cd ~/bench/$NAME && tar xzf /home/user/.n810-src.tgz && PATH=/home/user/bench-dev/bin:\$PATH CFLAGS='-I/home/user/bench-dev/include' LDFLAGS='-L/home/user/bench-dev/lib -lrt' make $TARGET $VARS" 2>&1
+rc=$?
+echo "---"
+echo "build rc=$rc  (tree + artifacts at n810:~/bench/$NAME)"
+exit $rc

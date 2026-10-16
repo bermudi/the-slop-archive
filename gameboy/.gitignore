@@ -1,0 +1,27 @@
+# Toolchain + run artifacts — preserved on disk, not repo content
+sdk/
+jobs/
+tmp.*
+*.sav
+
+# LLM emulator submissions (specimens, preserved on disk — the benchmark's
+# inputs/outputs, not the benchmark itself)
+cgb/
+dmg04/
+dmg810/
+dotmx/
+gb4n810/
+gb810/
+gb_emu/
+gbemu_n810/
+hy3boy/
+matcha/
+osmoGB/
+pocket-static/
+swe-2-gb/
+
+# tools/ scratch captures
+tools/*.raw
+tools/*.ppm
+tools/*.png
+tools/*.deb
