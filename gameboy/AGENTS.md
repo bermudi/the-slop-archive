@@ -7,6 +7,10 @@ doc — never edit it.
 Tracks: A = from-scratch emulator (`benchmark/n810-gb-emulator`), A′ = assisted
 control (overlay `tools/HARNESS.md` over `environment/tools/HARNESS.md`),
 B = optimize the shared baseline (`benchmark/n810-gb-optimize`).
+Host-side control tracks (no device): `benchmark/gb-scratch-c` (CPU/PPU/serial
+from docs alone, SDL2 + verified headless CLI) and `benchmark/gb-scratch-c-audio`
+(same + APU: `--wav-out` WAV capture scored spectrally, dmg_sound scored by
+rendered verdict).
 
 ## Device
 
@@ -35,7 +39,7 @@ B = optimize the shared baseline (`benchmark/n810-gb-optimize`).
   (`FBIO_WAITFORVSYNC` lives there on Diablo; pre-including it breaks on
   videodev2.h's incomplete `struct timeval`).
 
-## State (2026-09-15)
+## State (2026-10-16)
 
 - Canary v2 landed (commit 767ad6f): behavioral audio evidence,
   `canary_class` classification, `audio_works` scored rung. E2E-validated on
@@ -45,6 +49,40 @@ B = optimize the shared baseline (`benchmark/n810-gb-optimize`).
   (tee'd by the harbor runner); `tests/test.sh` greps it for probe evidence.
 - `jobs/trackA-pi-glm53-v4` was cancelled mid-run — no verifier output there;
   its session jsonl is still useful as a transcript-format reference.
+- `gb-scratch-c` hardened verifier: pacing rung (CPU% proxy), sprite-bearing
+  challenge ROM, dmg-acid2 golden rung. All tracks declare
+  `artifacts = [{source = "/work", destination = "work"}]` at task.toml top
+  level — under [metadata] it is silently ignored.
+- Scratch-c leaderboard (acid2-era): cat-jam-free 0.95, space-bunny 0.7844,
+  ling-3.1-flash 0.6125. Details in BENCHMARK-REPORT.md §9.
+- `gb-scratch-c-audio` added 2026-10-15 (commit 90632be): `--wav-out` WAV rung
+  (Goertzel spectral check, `tests/audio_check.py` stdlib-only) + dmg_sound
+  rendered-verdict rung. Oracle scores 1.0.
+- Preserved submissions: cat-jam `jobs/gbscratch-oc-catjam/*/artifacts/work`,
+  ling `jobs/gbscratch-pi-ling31/*/artifacts/work`, space-bunny
+  `jobs/gbscratch-pi-spacebunny-v7/work-final` (snapshot + transcript replay).
+- Rescore a preserved binary: `LOGS=… DIST=<work>/dist WORK=… bash
+  tests/test.sh` — all paths overridable via env.
+
+### Facts that cost debugging time (verified, don't re-derive)
+
+- **dmg_sound prints verdicts on the LCD, not serial** — run headless with
+  `--frame-out`, never grep stdout.
+- The vendored ref APU passes only 3/12 dmg_sound (02, 04, 06); the scored
+  subset is those three — the rest grade ref's bugs, not correctness.
+- All three scratch-c submissions drop tightly-spaced serial bytes
+  (challenge_sig emits one byte per vblank) — a systematic LLM blind spot,
+  not a verifier flake. Cat-jam's is nondeterministic.
+- `gb_save()` in the ref core writes `<rom>.sav` beside the ROM path —
+  verifiers must stage ROMs under $WORK (both scratch tracks do).
+- `pi-models.json` in the scratch env is currently real OpenRouter; kilo
+  gateway was proven (space-bunny clean run) but rate-limited ling hard
+  (429 storm killed the run at ~42 min — score is a floor, not a ceiling).
+  OpenRouter also 429'd ling that day; its upstream capacity was saturated.
+- Verifier weight sums: scratch-c = .05 artifact + .10 windowed + .05 paced
+  + .10 serial-sig + .25 ROM-suite + .25 challenge-render + .10 acid2
+  + .10 anim. Audio track = same with .05 sig / .20 suite / .20 render /
+  .05 anim + .10 dmg_sound + .10 wav.
 
 ## Open items
 

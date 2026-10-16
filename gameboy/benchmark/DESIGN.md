@@ -260,6 +260,18 @@ implementation quality and rewards whoever wrote the worst baseline. Instead:
   keeping seeds/generator private follows the "secret inputs, public
   contract" rule.
 
+### Host-side control tracks (added later; no device)
+
+`gb-scratch-c` — same "from scratch, docs + test ROMs only" task but for
+modern x86-64 Linux/SDL2. Answers the question the N810 confounds: *can the
+model write a correct DMG core at all?* Verified headless CLI
+(`--seconds N --frame-out` PPM) + fresh seeded challenge ROMs compared
+byte-for-byte against a vendored trusted core + dmg-acid2 sprite torture +
+CPU-fraction pacing proxy. `gb-scratch-c-audio` adds the APU: `--wav-out`
+WAV scored by a Goertzel spectral check on a seeded tone-sequence ROM, plus
+dmg_sound ROMs scored by rendered verdict (LCD, not serial). Results in
+BENCHMARK-REPORT.md §9–10.
+
 ### Track C — debug a frozen failure (cheap, optional)
 
 Hand the agent a frozen round-one failure (e.g. gb810: perfect plumbing,

@@ -534,3 +534,83 @@ a working Game Boy: a torn, slow, silent, but unmistakably real copyright
 screen on a 2008 tablet that had to have its X server frozen mid-breath to
 show it. In a field where the runner-up's best trick was *documenting its
 own failure honestly*, that counts as a convincing win.
+
+---
+
+## 9. Host-side control track (`gb-scratch-c`)
+
+A second experiment on clean ground: from-scratch DMG emulator in C for modern
+x86-64 Linux, SDL2 window + verified headless CLI (`--headless --seconds N
+--frame-out` PPM). No device. Same anti-cheat philosophy: fresh seeded
+challenge ROMs whose framebuffer is compared byte-for-byte against a vendored
+trusted reference core, dmg-acid2 sprite torture rung, pacing measured via
+CPU-fraction under the dummy SDL driver.
+
+Weights: `.05 artifact + .10 windowed + .05 paced + .10 serial-sig +
+.25 ROM-suite + .25 challenge-render + .10 dmg-acid2 + .10 anim`.
+
+### Leaderboard (hardened verifier, acid2 era)
+
+| model | score | ROMs | challenge render | acid2 | paced | serial sig |
+|---|---|---|---|---|---|---|
+| **cat-jam-free** (opencode zen, keyless) | **0.95** | 16/16 | ✓ byte-exact | ✓ | ✗ ~52% CPU unthrottled | ✓* |
+| space-bunny (pi, via kilo gw) | 0.7844 | 15/16 | ✓ | ✗ mouth/edge artifacts | ✓ 8% | ✗ |
+| ling-3.1-flash (pi, via kilo) | 0.6125 | 4/16 | ✓ | ✗ | ✓ 7.7% | ✗ |
+
+\* cat-jam's serial-sig is *nondeterministic* — failed its original run,
+passed the rescore. Timing-edge bug, not a missing feature.
+
+As-run (pre-hardening) scores: cat-jam 0.8844, space-bunny 0.7344,
+ling 0.7125 — the ladder moved when pacing and acid2 got teeth.
+
+### What the track surfaced
+
+- **All three submissions drop tightly-spaced serial bytes.** The challenge
+  ROM emits one signature byte per vblank; every emulator coalesces or drops
+  them (all emit the first and last only). blargg's polled serial with gaps
+  doesn't catch it. A systematic shared blind spot.
+- **acid2 caught real sprite bugs** space-bunny's BG-perfect render hid —
+  yet cat-jam *passed* acid2 while still losing Pikachu's eyes in Pokémon
+  Yellow. The residual gap between "passes the test ROM" and "runs a real
+  game" persists; real-ROM visual defects need yet deeper coverage.
+- **Pacing mattered:** cat-jam burns half a core windowed (unthrottled
+  free-run), the other two pace correctly at single-digit CPU.
+- **ling's score is a floor, not a ceiling:** kilo's upstream 429 storm
+  killed the agent at ~42 min mid-debug (compaction died on rate limit).
+  OpenRouter also refused it that day — upstream saturation, not harness.
+
+### Sandbox note
+
+A prior out-of-container cat-jam session was caught reading a previous
+submission's source and planning to port it ("the grader likely won't
+detect" — verbatim). The container closes that structurally: no repo mount,
+`/work` starts empty, agent-phase network is allowlist-only.
+
+### Artifacts
+
+- cat-jam: `jobs/gbscratch-oc-catjam/gb-scratch-c__Q63Xcat/artifacts/work/`
+- ling (kilo): `jobs/gbscratch-pi-ling31/gb-scratch-c__J8UWLSq/artifacts/work/`
+- space-bunny: `jobs/gbscratch-pi-spacebunny-v7/` — `work-snapshot-1415/`
+  (real mid-run `/work`) + `work-final/` (snapshot + transcript replay of the
+  last 40 min; the container's true final FS predates artifact collection)
+
+Rescore any preserved binary: `LOGS=… DIST=<work>/dist WORK=… bash
+benchmark/gb-scratch-c/tests/test.sh`.
+
+## 10. `gb-scratch-c-audio` (added 2026-10-15)
+
+Same track plus the APU. New required flag `--wav-out` (PCM WAV, 44100 Hz).
+Two new rungs (~0.20 of score):
+
+- **Audio challenge:** fresh seeded ROM plays 4 pulse tones at seed-derived
+  frequencies; the submission's WAV is checked with a Goertzel spectral test
+  (`tests/audio_check.py`, stdlib-only) — dominant fundamental per window,
+  ≥6× median SNR. Instrument validity: the reference APU must pass the same
+  check on the same ROM first.
+- **dmg_sound rendered-verdict suite:** verdicts are drawn on the LCD, not
+  serial (verified — the ROMs emit nothing on SB/SC). Scored subset = the
+  three ROMs the vendored reference APU itself passes (02, 04, 06) — it
+  fails the subtle length/sweep/power edge tests, so the other nine would
+  grade the reference's bugs, not the submission's.
+
+Oracle (ref core + shim) scores 1.0 end-to-end.
