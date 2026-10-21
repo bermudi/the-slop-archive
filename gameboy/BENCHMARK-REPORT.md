@@ -556,10 +556,25 @@ Weights: `.05 artifact + .10 windowed + .05 paced + .10 serial-sig +
 | **cat-jam-free** (opencode zen, keyless) | **0.85** | 16/16 | ✓ byte-exact | ✗ 96.40% | ✗ ~52% CPU unthrottled | ✓* |
 | space-bunny (pi, via kilo gw) | 0.7844 | 15/16 | ✓ | ✗ 97.67% | ✓ 8% | ✗ |
 | ling-3.1-flash (pi, via kilo) | 0.6125 | 4/16 | ✓ | ✗ 89.77% | ✓ 7.7% | ✗ |
+| minimax-m3.1-flash:free (pi, OpenRouter) | 0.3937 | 6/16 | ✓ | ✗ | ✗ **99%** unthrottled | ✗ |
 | *(calibration)* **gambatte-psr shim** on audio track | **1.00** | 16/16 | ✓ | ✓ 100% | ✓ 1.2% | ✓ |
 
 \* cat-jam's serial-sig is *nondeterministic* — failed its original run,
 passed the rescore. Timing-edge bug, not a missing feature.
+
+minimax (`jobs/gbscratch-pi-minimax31`, 2026-10-21): a genuinely readable
+run — solid PPU (byte-exact seeded render, like everyone) but a deeper CPU
+gap than the table shows: 6/16 ROMs, no anim, no acid2, serial sig dropped
+like the rest. Its distinguishing defect: the main loop never services
+SDL/quit events, so the binary **ignores SIGTERM entirely** — windowed mode
+can't be closed, `timeout` never returns, pacing reads 99% CPU (no frame
+pacing at all, not even free-run idling). The submission wedged the agent's
+own final `timeout 10` smoke test for ~23 min (pi exited uncleanly —
+`NonZeroAgentExitCodeError` — but the preserved `/work` verified normally).
+Same defect then wedged the *verifier's* windowed and pacing rungs; both
+had to be SIGKILLed externally post-deadline. test.sh now uses
+`timeout -k 3` + KILL-after-TERM on both tracks so TERM-immune submissions
+score honest timeouts instead of hanging the run.
 
 **2026-10-16 correction — the acid2 golden was self-referential.** The baked
 golden had been generated *by the vendored reference core*, which turns out
@@ -605,6 +620,7 @@ detect" — verbatim). The container closes that structurally: no repo mount,
 
 - cat-jam: `jobs/gbscratch-oc-catjam/gb-scratch-c__Q63Xcat/artifacts/work/`
 - ling (kilo): `jobs/gbscratch-pi-ling31/gb-scratch-c__J8UWLSq/artifacts/work/`
+- minimax: `jobs/gbscratch-pi-minimax31/gb-scratch-c__twzgsaA/artifacts/work/`
 - space-bunny: `jobs/gbscratch-pi-spacebunny-v7/` — `work-snapshot-1415/`
   (real mid-run `/work`) + `work-final/` (snapshot + transcript replay of the
   last 40 min; the container's true final FS predates artifact collection)

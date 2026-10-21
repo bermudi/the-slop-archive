@@ -54,7 +54,8 @@ rendered verdict).
   `artifacts = [{source = "/work", destination = "work"}]` at task.toml top
   level — under [metadata] it is silently ignored.
 - Scratch-c leaderboard (canonical-acid2 era): cat-jam-free 0.85,
-  space-bunny 0.7844, ling-3.1-flash 0.6125. Calibration: a gambatte-psr
+  space-bunny 0.7844, ling-3.1-flash 0.6125, minimax-m3.1-flash:free 0.3937
+  (`jobs/gbscratch-pi-minimax31`). Calibration: a gambatte-psr
   shim scores **1.0** on gb-scratch-c-audio. Details in BENCHMARK-REPORT.md
   §9–10.
 - `gb-scratch-c-audio` added 2026-10-15 (commit 90632be): `--wav-out` WAV rung
@@ -81,7 +82,12 @@ rendered verdict).
   `--frame-out`, never grep stdout.
 - The vendored ref APU passes only 3/12 dmg_sound (02, 04, 06); the scored
   subset is those three — the rest grade ref's bugs, not correctness.
-- All three scratch-c submissions drop tightly-spaced serial bytes
+- A submission can be SIGTERM-immune (minimax's gbemu never services
+  SDL/quit events): bare `timeout` wedges forever on it, and so did the
+  agent's own smoke test + the verifier's windowed/pacing rungs. Both
+  tracks' test.sh now use `timeout -k 3` and KILL-after-TERM — semantics
+  unchanged (still rc 124 on timeout), they just can't hang.
+- All four scratch-c submissions drop tightly-spaced serial bytes
   (challenge_sig emits one byte per vblank) — a systematic LLM blind spot,
   not a verifier flake. Cat-jam's is nondeterministic.
 - `gb_save()` in the ref core writes `<rom>.sav` beside the ROM path —

@@ -189,7 +189,7 @@ if [ "$m_artifact" = 1 ]; then
         windowed_note="no libSDL2 in ldd"
     fi
     SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
-        timeout --signal=TERM 20 "$BIN" "$ROMSRC/demo.gb" \
+        timeout -k 3 --signal=TERM 20 "$BIN" "$ROMSRC/demo.gb" \
         >"$WORK/windowed.log" 2>&1
     rc=$?
     if [ "$rc" = 124 ]; then
@@ -214,7 +214,9 @@ if [ "$m_artifact" = 1 ]; then
     if [ -d "/proc/$ppid" ]; then
         ticks=$(awk '{print $14+$15}' "/proc/$ppid/stat" 2>/dev/null)
         t1=$(date +%s%N)
-        kill -TERM "$ppid" 2>/dev/null; wait "$ppid" 2>/dev/null
+        kill -TERM "$ppid" 2>/dev/null
+        for _ in 1 2 3; do [ -d "/proc/$ppid" ] || break; sleep 1; done
+        kill -KILL "$ppid" 2>/dev/null; wait "$ppid" 2>/dev/null
         if [ -n "$ticks" ]; then
             paced_cpu=$(python3 -c "print(round(100*$ticks*1e9/($t1-$t0)/$(getconf CLK_TCK),1))")
             # <45% of one core = paced; an idle-paced DMG emu is single digits
