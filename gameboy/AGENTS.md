@@ -54,8 +54,10 @@ rendered verdict).
   `artifacts = [{source = "/work", destination = "work"}]` at task.toml top
   level — under [metadata] it is silently ignored.
 - Scratch-c leaderboard (canonical-acid2 era): cat-jam-free 0.85,
-  space-bunny 0.7844, ling-3.1-flash 0.6125, minimax-m3.1-flash:free 0.3937
-  (`jobs/gbscratch-pi-minimax31`). Calibration: a gambatte-psr
+  space-bunny 0.7844, minimax-m3.1-flash:free 0.6844 via opencode
+  (`jobs/gbscratch-oc-minimax31`) vs 0.3937 via pi
+  (`jobs/gbscratch-pi-minimax31`) — same model, harness/variance delta.
+  ling-3.1-flash 0.6125. Calibration: a gambatte-psr
   shim scores **1.0** on gb-scratch-c-audio. Details in BENCHMARK-REPORT.md
   §9–10.
 - `gb-scratch-c-audio` added 2026-10-15 (commit 90632be): `--wav-out` WAV rung
