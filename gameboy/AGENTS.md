@@ -57,9 +57,23 @@ rendered verdict).
   space-bunny 0.7844, minimax-m3.1-flash:free 0.6844 via opencode
   (`jobs/gbscratch-oc-minimax31`) vs 0.3937 via pi
   (`jobs/gbscratch-pi-minimax31`) — same model, harness/variance delta.
-  ling-3.1-flash 0.6125. Calibration: a gambatte-psr
+  ling-3.1-flash 0.6125, stealth/crouton-alpha 0.05 via opencode
+  (`jobs/gbscratch-oc-crouton-or`, AgentTimeoutError — see below) and 0.325
+  on the audio track (`jobs/gbaudio-oc-crouton-or`). Calibration: a gambatte-psr
   shim scores **1.0** on gb-scratch-c-audio. Details in BENCHMARK-REPORT.md
   §9–10.
+- **Non-ZDR stealth models do not run keyless on opencode Zen** — the upstream
+  demands a `safety_identifier` (`AI_APICallError ... requires an end-user
+  identifier`), which anonymous Zen requests lack. First seen 2026-11-03 on
+  `opencode/crouton-alpha-free` (same class of failure as Muse Spark Free).
+  Working route: `openrouter/stealth/<slug>` with `OPENROUTER_API_KEY`
+  exported into harbor's env — `pass-keys run goblin-dev -- harbor run -c …`.
+- crouton-alpha failure mode (both tracks): non-termination. Slow,
+  small-step grinding (~1 MB transcript, 200+ opencode steps), kept
+  rewriting the core and ran out the 2h clock mid-debug — scratch-c shipped
+  a binary with no SDL2 and a serial port spewing one repeated byte
+  (0.05 = artifact only); the audio run stopped on its own in a working
+  state (10/16 ROMs, windowed+anim OK, no APU → 0.325).
 - `gb-scratch-c-audio` added 2026-10-15 (commit 90632be): `--wav-out` WAV rung
   (Goertzel spectral check, `tests/audio_check.py` stdlib-only) + dmg_sound
   rendered-verdict rung. Oracle scores 1.0 vs ref-rendered acid2, ~0.90 vs
