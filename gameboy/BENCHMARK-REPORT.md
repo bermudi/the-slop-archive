@@ -621,7 +621,10 @@ ling 0.7125 — the ladder moved when pacing and acid2 got teeth.
   retryable" blip that killed both sessions within 4 min of each other —
   `devin --print` exits on transient errors instead of retrying, so those
   scores are floors (max 0.7375 12/16, high 0.6906 9/16 — already past
-  minimax-opencode's full-length 0.6844). v6 ran to voluntary completion:
+  minimax-opencode's full-length 0.6844). Both v5 sessions were resumable
+  (artifacts keep `sessions.db` + `/work`) — see AGENTS.md; on blips,
+  `devin --continue` is the cheap path, not a fresh run. v6 ran to
+  voluntary completion:
   **max 0.7844 ties space-bunny exactly** — clean 50-min run, 15/16 ROMs,
   byte-exact challenge render, paced at 16.2%, missed acid2 + the serial
   sig (the shared blind spot holds: five of five emulators drop the

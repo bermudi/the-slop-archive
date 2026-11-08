@@ -127,6 +127,13 @@ rendered verdict).
   the image on slow links: two parallel cold builds blew the 600s
   `build_timeout_sec` (~380kB/s × 225MB apt layer ≈ 533s); a warm
   `docker build` + `environment_build_timeout_multiplier` covers it.
+- **On backend-killed devin trials, RESUME — never relaunch fresh.**
+  Errored trials preserve `agent/sessions.db` + the `/work` artifact;
+  a warmed env + `devin --continue` (or `-r <session-id>`) finishes the
+  run mid-context at a fraction of the tokens. Burning a fresh
+  full-length run per transient blip is the expensive path — paid for
+  once on v5→v6, don't repeat. Same discipline for any harness with
+  native session resume.
 - `pi-models.json` in the scratch env is currently real OpenRouter; kilo
   gateway was proven (space-bunny clean run) but rate-limited ling hard
   (429 storm killed the run at ~42 min — score is a floor, not a ceiling).
