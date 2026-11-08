@@ -54,7 +54,10 @@ rendered verdict).
   `artifacts = [{source = "/work", destination = "work"}]` at task.toml top
   level — under [metadata] it is silently ignored.
 - Scratch-c leaderboard (canonical-acid2 era): cat-jam-free 0.85,
-  space-bunny 0.7844, minimax-m3.1-flash:free 0.6844 via opencode
+  space-bunny 0.7844 = swe-2-flash-max 0.7844 via devin
+  (`jobs/gbscratch-devin-swe2flash-v6`, 2026-11-08; swe-2-flash-high
+  0.4781, self-stopped at 30 min on a 5/16 build), minimax-m3.1-flash:free
+  0.6844 via opencode
   (`jobs/gbscratch-oc-minimax31`) vs 0.3937 via pi
   (`jobs/gbscratch-pi-minimax31`) — same model, harness/variance delta.
   ling-3.1-flash 0.6125, stealth/crouton-alpha 0.05 via opencode

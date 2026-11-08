@@ -558,6 +558,8 @@ Weights: `.05 artifact + .10 windowed + .05 paced + .10 serial-sig +
 | ling-3.1-flash (pi, via kilo) | 0.6125 | 4/16 | ✓ | ✗ 89.77% | ✓ 7.7% | ✗ |
 | minimax-m3.1-flash:free (opencode, OpenRouter) | 0.6844 | 15/16 | ✓ | ✗ | ✓ 16.1% | ✗ |
 | minimax-m3.1-flash:free (pi, OpenRouter) | 0.3937 | 6/16 | ✓ | ✗ | ✗ **99%** unthrottled | ✗ |
+| swe-2-flash-max (devin) | **0.7844** | 15/16 | ✓ | ✗ | ✓ 16.2% | ✗ |
+| swe-2-flash-high (devin) | 0.4781 | 5/16 | ✓ | ✗ | ✗ 99.1% unthrottled | ✗ |
 | *(calibration)* **gambatte-psr shim** on audio track | **1.00** | 16/16 | ✓ | ✓ 100% | ✓ 1.2% | ✓ |
 
 \* cat-jam's serial-sig is *nondeterministic* — failed its original run,
@@ -613,6 +615,20 @@ ling 0.7125 — the ladder moved when pacing and acid2 got teeth.
 - **ling's score is a floor, not a ceiling:** kilo's upstream 429 storm
   killed the agent at ~42 min mid-debug (compaction died on rate limit).
   OpenRouter also refused it that day — upstream saturation, not harness.
+- **swe-2-flash on devin ran four times** (`jobs/gbscratch-devin-swe2flash-v5`
+  + `-v6`, 2026-11-08) — first `devin` harness runs; plumbing notes in
+  AGENTS.md. v5 ended at ~45–49 min on a *backend-wide* "unavailable,
+  retryable" blip that killed both sessions within 4 min of each other —
+  `devin --print` exits on transient errors instead of retrying, so those
+  scores are floors (max 0.7375 12/16, high 0.6906 9/16 — already past
+  minimax-opencode's full-length 0.6844). v6 ran to voluntary completion:
+  **max 0.7844 ties space-bunny exactly** — clean 50-min run, 15/16 ROMs,
+  byte-exact challenge render, paced at 16.2%, missed acid2 + the serial
+  sig (the shared blind spot holds: five of five emulators drop the
+  per-vblank signature bytes). **high 0.4781 is the variance datapoint:**
+  it *declared done at 30 min* with a 5/16, unpaced (99.1% CPU) build —
+  the only submission to stop early, and it stopped on a worse emulator
+  than its own killed v5 attempt.
 
 ### Sandbox note
 
