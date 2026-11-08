@@ -108,6 +108,22 @@ rendered verdict).
   not a verifier flake. Cat-jam's is nondeterministic.
 - `gb_save()` in the ref core writes `<rom>.sav` beside the ROM path —
   verifiers must stage ROMs under $WORK (both scratch tracks do).
+- **Running `devin` agents under harbor** (first working config:
+  `jobs/gbscratch-devin-swe2flash-v5`): auth = `WINDSURF_API_KEY` exported
+  from the host's `~/.local/share/devin/credentials.toml` (extract with sed,
+  never print). Cognition hosts must go in BOTH allowlists:
+  `--allow-environment-host` needs `cli.devin.ai` + `static.devin.ai`
+  (installer) AND `server.codeium.com`/`api.devin.ai`/`app.devin.ai`/
+  `unleash.codeium.com` — install.sh ends with `devin setup`, which retries
+  `api.devin.ai/acp/live` forever against the egress sidecar. Same hosts via
+  `--allow-agent-host` for the run itself. Workspace trust: devin ≥3000.12.28
+  refuses `--print` in an untrusted `/work`; `--ae RESPECT_WORKSPACE_TRUST=false`
+  does NOT reach the run command — the gb-scratch-c env Dockerfile seeds
+  `/root/.local/share/devin/cli/trusted_workspaces.json` instead (add the
+  same seed to any track that runs devin). Prebuild
+  the image on slow links: two parallel cold builds blew the 600s
+  `build_timeout_sec` (~380kB/s × 225MB apt layer ≈ 533s); a warm
+  `docker build` + `environment_build_timeout_multiplier` covers it.
 - `pi-models.json` in the scratch env is currently real OpenRouter; kilo
   gateway was proven (space-bunny clean run) but rate-limited ling hard
   (429 storm killed the run at ~42 min — score is a floor, not a ceiling).

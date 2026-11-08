@@ -15,5 +15,12 @@ COPY roms/ /opt/gb/roms/
 RUN mkdir -p /root/.pi/agent
 COPY pi-models.json /root/.pi/agent/models.json
 
+# Devin CLI refuses non-interactive runs in an untrusted workspace, and env
+# overrides don't reach the harbor-run command (verified 2026-11). Pre-trust
+# /work via the CLI's own trust store. Inert for other agents.
+RUN mkdir -p /root/.local/share/devin/cli \
+    && printf '{"trusted_paths":["/work"]}\n' \
+        > /root/.local/share/devin/cli/trusted_workspaces.json
+
 RUN mkdir -p /work/dist /logs/verifier
 WORKDIR /work
