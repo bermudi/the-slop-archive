@@ -127,6 +127,24 @@ rendered verdict).
   the image on slow links: two parallel cold builds blew the 600s
   `build_timeout_sec` (~380kB/s × 225MB apt layer ≈ 533s); a warm
   `docker build` + `environment_build_timeout_multiplier` covers it.
+- **Running `claude-code` agents under harbor** (first working config:
+  `jobs/gbaudio-claude-haiku55-v2`): auth = subscription OAuth —
+  `CLAUDE_FORCE_OAUTH=1` + `CLAUDE_CODE_OAUTH_TOKEN` exported from
+  `~/.claude/.credentials.json` `.claudeAiOauth.accessToken` via jq (never
+  print). The access token is static inside the run — it must outlive the
+  agent phase (~4h validity fresh; check `expiresAt` vs now+3h first) and
+  any local `claude` use rotates it, killing the run. Agent phase needs
+  `api.anthropic.com` in `agents[].extra_allowed_hosts` (plus `claude.ai`);
+  setup phase needs `downloads.claude.ai` in `environment.extra_allowed_hosts`.
+  **On this host's link the 340MB claude binary download dies mid-stream
+  (`curl: (18)` h2 reset through the egress sidecar).** Fix: bind-mount the
+  host binary via `environment.mounts` —
+  `{type:"bind", source:"~/.local/share/claude/versions/<ver>",
+  target:"/usr/local/bin/claude", read_only:true}` — harbor's
+  `command -v claude` install check then short-circuits (mount the real
+  file, not the `~/.local/bin/claude` symlink; glibc ≥2.26 needed,
+  bookworm fine). Job dirs can't be reused after failure with a changed
+  config — bump the job_name (`-v2`), the failed dir is the record.
 - **On backend-killed devin trials, RESUME — never relaunch fresh.**
   Errored trials preserve `agent/sessions.db` + the `/work` artifact;
   a warmed env + `devin --continue` (or `-r <session-id>`) finishes the
