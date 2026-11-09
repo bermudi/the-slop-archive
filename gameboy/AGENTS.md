@@ -89,6 +89,11 @@ rendered verdict).
   challenge ROM never enables the window (LCDC bit 5); check before adding
   window use to a scored ROM. dmg_sound is a live ref-vs-submission diff and
   showed no divergence on the 3 scored ROMs.
+- claude-code/haiku-5-5 @ xhigh audio run killed at ~46min by operator
+  (2026-11-08) — session + /work preserved at
+  `jobs/gbaudio-claude-haiku55-xhigh/preserved/` for `--continue`
+  (session `7c9fdbd2-f834-41c4-9521-5a5c078469d7`; OAuth token must be
+  re-exported at resume time, the one used then expires ~01:00 UTC).
 - Preserved submissions: cat-jam `jobs/gbscratch-oc-catjam/*/artifacts/work`,
   ling `jobs/gbscratch-pi-ling31/*/artifacts/work`, space-bunny
   `jobs/gbscratch-pi-spacebunny-v7/work-final` (snapshot + transcript replay).
