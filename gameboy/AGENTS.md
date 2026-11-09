@@ -190,5 +190,9 @@ rendered verdict).
 
 ## House rules
 
+- **Never start a run without asking the operator for the effort/thinking
+  level first.** A named model is not enough — the run does not start until
+  they answer (learned 2026-11-08: a claude-code/haiku-5-5 run launched on
+  default effort had to be killed).
 - `trash` over `rm` locally; bare `python`/`pip` are blocked — `uv run python`.
 - Commit often; never push without permission.
