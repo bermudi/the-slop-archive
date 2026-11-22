@@ -176,3 +176,6 @@ cython_debug/
 .pypirc
 tetris/tetris_high_score.txt
 .qodo
+
+# private key for N810 device access — kept on disk only, never commit
+n810_rsa
