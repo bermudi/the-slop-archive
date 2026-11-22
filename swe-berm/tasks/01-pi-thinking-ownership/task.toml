@@ -1,0 +1,71 @@
+schema_version = "1.3"
+artifacts = []
+
+[task]
+name = "bermudi/pi-thinking-ownership"
+description = "Single-ownership refactor: remove thinkingLevel from fixed-defaults, leaving model-thinking as sole owner."
+authors = [{ name = "bermudi", email = "github.igizp@dabg.uk" }]
+keywords = ["pi", "typescript", "refactor", "ownership"]
+
+[metadata]
+base_commit = "7f00c6abe8d726c2f8648231f2005b8826877a92"
+base_repo = "agent-extensions"
+bundle = "pi-packages/bermudis-pi-goodies"
+# Curated base: bundle @ 7f00c6a plus the provider-balance.test.ts fixture-key
+# fix from aea4772 (unrelated determinism fix folded INTO the base so the
+# graded patch is a single capability). Solution = bundle @ 48ac5c5 (the
+# four-commit stack f0972bb -> aea4772 -> 8e1081d -> 48ac5c5; the last commit
+# fixes reset on inactive overrides and failed-load caching).
+base_curation = "7f00c6a + provider-balance.test.ts@aea4772"
+solution_commit = "48ac5c536f76e540588c927a5f0b785d9cbc4cfb"
+
+[environment]
+network_mode = "no-network"
+build_timeout_sec = 600.0
+os = "linux"
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+
+[environment.env]
+
+[verifier]
+timeout_sec = 600.0
+network_mode = "no-network"
+environment_mode = "separate"
+
+[verifier.env]
+
+[verifier.environment]
+build_timeout_sec = 600.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+os = "linux"
+network_mode = "no-network"
+
+[[verifier.collect]]
+command = """
+set -e
+mkdir -p /logs/artifacts
+cd /app
+# base tag created in environment Dockerfile
+if git rev-parse --verify base >/dev/null 2>&1; then BASE=base; else BASE=HEAD; fi
+# Stage the final non-ignored worktree so new files are included even when
+# the agent did not explicitly git add or commit them. One base-to-final diff
+# is coherent and captures committed, staged, and unstaged changes together.
+git add -A
+git diff --binary "$BASE" -- > /logs/artifacts/model.patch
+# ensure file exists even if empty
+touch /logs/artifacts/model.patch
+"""
+timeout_sec = 30.0
+
+[agent]
+timeout_sec = 1800.0
+network_mode = "no-network"
+
+[solution]
+# reference solution is the working tree at task creation; never used at grading
+
+[solution.env]

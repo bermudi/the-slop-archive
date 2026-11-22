@@ -1,0 +1,11 @@
+{
+  "version": 0,
+  "total_points": 0,
+  "status": "PENDING",
+  "note": "Placeholder manifest. The reference is materialized; generate this with tests/gen_manifest.py after the hidden suite exists: uv run python tests/gen_manifest.py --gold-junit /tmp/gold-junit.xml --base-junit /tmp/base-junit.xml --out tests/points.json. An empty manifest can never award points; a real run against it would score 0. See README.md 'Finishing the task'.",
+  "categories": {},
+  "points": {},
+  "preservation": [],
+  "regression": [],
+  "hidden_files": []
+}

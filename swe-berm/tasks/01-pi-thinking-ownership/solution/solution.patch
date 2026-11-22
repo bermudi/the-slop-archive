@@ -1,0 +1,1617 @@
+diff --git a/README.md b/README.md
+index 0584c4b..cd5eaf8 100644
+--- a/README.md
++++ b/README.md
+@@ -11,7 +11,7 @@ extensions. One entry point, ten independent features.
+ | `zed` | `/z` | Open Zed editor on the current working directory. |
+ | `prefer-tools` | hook (no command) | Nudge toward modern CLIs: `rg` over `grep`, `fd` over `find`, `uv` over bare `python`/`pip`/`pytest`/`mypy`. |
+ | `model-thinking` | hook + `/model-thinking` | Apply provider/model thinking defaults and explicitly save per-model defaults. |
+-| `fixed-defaults` | hook + `/fixed-defaults` | Keep the global startup provider, model, and thinking defaults fixed while allowing in-session model changes; `/fixed-defaults set` pins the current model and thinking level. |
++| `fixed-defaults` | hook + `/fixed-defaults` | Keep the global startup provider and model fixed while allowing in-session model changes; `/fixed-defaults set` pins the current model. |
+ | `kilo` | provider | Access Kilo Gateway models via `/login kilo` or `KILO_API_KEY`. |
+ | `provider-balance` | footer (no command) | Show remaining Kilo or OpenRouter credits, z.ai token-plan quota, or OpenAI Codex quota on the right side of the working-directory footer line. |
+ | `tps` | hook (no command) | Notify tokens/sec and in/out/cache token usage at the end of each agent turn. |
+@@ -53,35 +53,47 @@ config and overwrites an existing entry. Manual thinking-level changes in Pi do
+ not modify this file. All current Pi levels are accepted:
+ `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
+ `/model-thinking` shows the active resolution and config path;
+-`/model-thinking reset` deletes the whole config.
++`/model-thinking reset` deletes the whole config. A malformed config is reported
++and ignored; `/model-thinking set` refuses to overwrite it until you repair the
++file or reset it.
+ 
+-## Fixed startup defaults
++## Fixed startup model
+ 
+ Pi normally saves the last model and thinking level selected in the global
+-settings file. The bundle pins those cross-session defaults to:
++settings file. `fixed-defaults` pins only the cross-session provider and model;
++`model-thinking` is the sole owner of model-specific thinking levels.
++
++Create `~/.pi/agent/fixed-defaults.json` to pin a startup model:
+ 
+ ```json
+ {
+-  "defaultProvider": "openai-codex",
+-  "defaultModel": "gpt-5.6-luna",
+-  "defaultThinkingLevel": "max"
++  "provider": "openai-codex",
++  "model": "gpt-5.6-luna"
+ }
+ ```
+ 
+ Selecting a different model still changes the active session and its transcript;
+-`fixed-defaults` only restores the startup values after Pi persists a selection.
+-
+-The pinned values are the built-ins above, optionally overridden per field by
+-`~/.pi/agent/fixed-defaults.json` — omit a field to keep the built-in value for
+-it, and hand edits are picked up without a reload. Manage it from Pi:
+-
+-- `/fixed-defaults set` — pin the currently active model and thinking level as
+-  the new startup defaults (written to the override file and applied to
+-  `settings.json` immediately).
+-- `/fixed-defaults` — show the effective pin, the active model, and the
+-  override file path.
+-- `/fixed-defaults reset` — delete the override file and fall back to the
+-  built-in values.
++`fixed-defaults` restores the startup model after Pi persists a selection. Pi
++chooses the initial model before extensions receive `session_start`, so if you
++manually create or edit a pin for B while settings still name A, the current
++session remains on A and B starts with the next fresh session. Resuming an
++existing session restores that session's model instead.
++
++Older config files may contain `thinkingLevel`; that field is accepted for
++compatibility but ignored and should be managed in `model-thinking.json` instead.
++`fixed-defaults` logs a warning and shows the migration in its status when it
++finds the legacy field. The `/fixed-defaults set` command rewrites the file in
++the provider/model-only format.
++
++Manage the pin from Pi:
++
++- `/fixed-defaults set` — pin the currently active model as the startup model
++  (written to the override file and applied to `settings.json` immediately).
++- `/fixed-defaults` — show the active model, pinned startup model, and override
++  path.
++- `/fixed-defaults reset` — save the currently active model as Pi's last
++  selection, then delete the override file and stop pinning. With no active
++  model, it refuses to remove the pin.
+ 
+ ## Provider and balance details
+ 
+diff --git a/bundle-registration.test.ts b/bundle-registration.test.ts
+new file mode 100644
+index 0000000..79e72ba
+--- /dev/null
++++ b/bundle-registration.test.ts
+@@ -0,0 +1,53 @@
++import { describe, expect, test } from "bun:test";
++import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
++import bundle from "./index.ts";
++
++describe("bundle registration", () => {
++  test("the entry point registers both ownership modules and no thinking listener", () => {
++    const events = new Map<string, number>();
++    const commands = new Set<string>();
++    const providers = new Set<string>();
++
++    // Proxy harness: records every registration call, no-ops the rest, and
++    // gives the events channel a stub. This exercises the REAL bundle entry
++    // point (index.ts) rather than importing the two modules directly.
++    const api = new Proxy({} as ExtensionAPI, {
++      get(_target, prop) {
++        if (prop === "events") {
++          return { on: () => () => {}, emit: () => {} };
++        }
++        if (prop === "on") {
++          return (event: string) => {
++            events.set(event, (events.get(event) ?? 0) + 1);
++            return () => {};
++          };
++        }
++        if (prop === "registerCommand") {
++          return (name: string) => {
++            commands.add(name);
++          };
++        }
++        if (prop === "registerProvider") {
++          return (id: string) => {
++            providers.add(id);
++          };
++        }
++        return () => {};
++      },
++    });
++
++    bundle(api);
++
++    expect(commands.has("fixed-defaults")).toBe(true);
++    expect(commands.has("model-thinking")).toBe(true);
++    expect(providers.has("kilo")).toBe(true);
++    // Exactly one thinking_level_select listener remains in the bundle:
++    // provider-balance's read-only footer tracking. The base bundle has two
++    // (provider-balance + fixed-defaults' restoring listener); the split must
++    // remove fixed-defaults'.
++    expect(events.get("thinking_level_select") ?? 0).toBe(1);
++    // both ownership modules still act on session start and model selection
++    expect(events.get("session_start") ?? 0).toBeGreaterThanOrEqual(2);
++    expect(events.get("model_select") ?? 0).toBeGreaterThanOrEqual(2);
++  });
++});
+diff --git a/fixed-defaults.test.ts b/fixed-defaults.test.ts
+index 8b6958c..9040483 100644
+--- a/fixed-defaults.test.ts
++++ b/fixed-defaults.test.ts
+@@ -147,13 +147,12 @@ describe("fixed-defaults", () => {
+     expect(settingsAt(settingsPath)).toEqual(original);
+   });
+ 
+-  test("set pins the active model and thinking level and applies them immediately", async () => {
++  test("set pins the active model and applies it immediately", async () => {
+     const { agentDir, settingsPath, original, pi, ctx } = setup();
+     fixedDefaults(pi.api, { agentDir });
+     const handler = pi.commands.get("fixed-defaults")!;
+     const notifications: string[] = [];
+ 
+-    pi.level = "xhigh";
+     await handler(
+       "set",
+       context(ctx.cwd, { model: model("zai", "glm-5.2"), notifications }),
+@@ -167,27 +166,40 @@ describe("fixed-defaults", () => {
+     ).toEqual({
+       provider: "zai",
+       model: "glm-5.2",
+-      thinkingLevel: "xhigh",
+     });
+-    // Settings file updated immediately, without waiting for an event.
++    // Settings file updated immediately, without waiting for an event. The
++    // thinking default remains owned by Pi/model-thinking.
+     expect(settingsAt(settingsPath)).toEqual({
+       ...original,
+       defaultProvider: "zai",
+       defaultModel: "glm-5.2",
+-      defaultThinkingLevel: "xhigh",
+     });
+     expect(notifications.some((n) => n.includes("zai/glm-5.2"))).toBe(true);
+   });
+ 
+-  test("events restore the pinned override instead of built-ins", async () => {
++  test("model events restore the pinned override without changing thinking", async () => {
+     const { agentDir, settingsPath, original, pi, ctx } = setup();
+     fixedDefaults(pi.api, { agentDir });
+     const handler = pi.commands.get("fixed-defaults")!;
+ 
+-    pi.level = "xhigh";
+     await handler("set", context(ctx.cwd, { model: model("zai", "glm-5.2") }));
+ 
+-    // Later model/thinking changes restore the NEW pin, not the built-ins.
++    // Pi persists the selected model and thinking level before it emits the
++    // model event. Reproduce that ordering rather than asking the extension to
++    // restore against stale settings.
++    writeFileSync(
++      settingsPath,
++      `${JSON.stringify(
++        {
++          ...original,
++          defaultProvider: "anthropic",
++          defaultModel: "claude-sonnet-4",
++          defaultThinkingLevel: "low",
++        },
++        null,
++        2,
++      )}\n`,
++    );
+     await pi.emit(
+       "model_select",
+       {
+@@ -207,8 +219,9 @@ describe("fixed-defaults", () => {
+       ...original,
+       defaultProvider: "zai",
+       defaultModel: "glm-5.2",
+-      defaultThinkingLevel: "xhigh",
++      defaultThinkingLevel: "low",
+     });
++    expect(pi.handlers.has("thinking_level_select")).toBe(false);
+   });
+ 
+   test("reset removes the override and stops pinning", async () => {
+@@ -217,38 +230,75 @@ describe("fixed-defaults", () => {
+     const handler = pi.commands.get("fixed-defaults")!;
+     const notifications: string[] = [];
+ 
+-    pi.level = "xhigh";
+     await handler("set", context(ctx.cwd, { model: model("zai", "glm-5.2") }));
+     expect(existsSync(join(agentDir, "fixed-defaults.json"))).toBe(true);
+ 
+-    await handler("reset", context(ctx.cwd, { notifications }));
++    const activeModel = model("anthropic", "claude-sonnet-4");
++    await handler(
++      "reset",
++      context(ctx.cwd, { model: activeModel, notifications }),
++    );
+     expect(existsSync(join(agentDir, "fixed-defaults.json"))).toBe(false);
+-    expect(notifications.some((n) => n.includes("pin removed"))).toBe(true);
++    expect(
++      notifications.some((n) =>
++        n.includes("anthropic/claude-sonnet-4 as its last selection"),
++      ),
++    ).toBe(true);
++
++    // Reset persists the model that is active now, so the former pin cannot
++    // remain in settings.json and win the next startup.
++    expect(settingsAt(settingsPath)).toEqual({
++      ...original,
++      defaultProvider: "anthropic",
++      defaultModel: "claude-sonnet-4",
++    });
+ 
+-    // With no override, the next event is a no-op: settings hold the last
+-    // applied pin rather than reverting to an earlier state.
+     await pi.emit("session_start", { reason: "startup" }, ctx);
+     expect(settingsAt(settingsPath)).toEqual({
+       ...original,
+-      defaultProvider: "zai",
+-      defaultModel: "glm-5.2",
+-      defaultThinkingLevel: "xhigh",
++      defaultProvider: "anthropic",
++      defaultModel: "claude-sonnet-4",
+     });
+   });
+ 
+-  test("thinkingLevel-only override pins thinking and leaves the model alone", async () => {
++  test("reset without an active model leaves the pin in place", async () => {
++    const { agentDir, pi, ctx } = setup();
++    fixedDefaults(pi.api, { agentDir });
++    const handler = pi.commands.get("fixed-defaults")!;
++    const notifications: string[] = [];
++
++    await handler("set", context(ctx.cwd, { model: model("zai", "glm-5.2") }));
++    await handler("reset", context(ctx.cwd, { notifications }));
++
++    expect(existsSync(join(agentDir, "fixed-defaults.json"))).toBe(true);
++    expect(
++      notifications.some((message) => message.includes("active model")),
++    ).toBe(true);
++  });
++
++  test("legacy thinkingLevel is ignored and does not pin thinking", async () => {
+     const { agentDir, settingsPath, original, pi, ctx } = setup();
+     writeFileSync(
+       join(agentDir, "fixed-defaults.json"),
+-      `${JSON.stringify({ thinkingLevel: "low" }, null, 2)}\n`,
++      `${JSON.stringify(
++        { provider: "zai", model: "glm-5.2", thinkingLevel: "max" },
++        null,
++        2,
++      )}\n`,
+     );
+     fixedDefaults(pi.api, { agentDir });
+ 
+     await pi.emit("session_start", { reason: "startup" }, ctx);
++    await pi.emit(
++      "thinking_level_select",
++      { level: "low", previousLevel: "high" },
++      ctx,
++    );
+ 
+     expect(settingsAt(settingsPath)).toEqual({
+       ...original,
+-      defaultThinkingLevel: "low",
++      defaultProvider: "zai",
++      defaultModel: "glm-5.2",
+     });
+   });
+ 
+@@ -265,12 +315,47 @@ describe("fixed-defaults", () => {
+     expect(settingsAt(settingsPath)).toEqual(original);
+   });
+ 
++  test("reset removes an invalid override without changing settings", async () => {
++    const { agentDir, settingsPath, original, pi, ctx } = setup();
++    const overridePath = join(agentDir, "fixed-defaults.json");
++    writeFileSync(overridePath, "not json\n");
++    fixedDefaults(pi.api, { agentDir });
++    const handler = pi.commands.get("fixed-defaults")!;
++
++    await handler(
++      "reset",
++      context(ctx.cwd, { model: model("anthropic", "claude-sonnet-4") }),
++    );
++
++    expect(existsSync(overridePath)).toBe(false);
++    expect(settingsAt(settingsPath)).toEqual(original);
++  });
++
++  test("reset removes a legacy thinkingLevel-only override without changing settings", async () => {
++    const { agentDir, settingsPath, original, pi, ctx } = setup();
++    const overridePath = join(agentDir, "fixed-defaults.json");
++    writeFileSync(
++      overridePath,
++      `${JSON.stringify({ thinkingLevel: "max" })}\n`,
++    );
++    fixedDefaults(pi.api, { agentDir });
++    const handler = pi.commands.get("fixed-defaults")!;
++
++    await handler(
++      "reset",
++      context(ctx.cwd, { model: model("anthropic", "claude-sonnet-4") }),
++    );
++
++    expect(existsSync(overridePath)).toBe(false);
++    expect(settingsAt(settingsPath)).toEqual(original);
++  });
++
+   test("status shows the effective pin, active model, and override path", async () => {
+     const { agentDir, pi, ctx } = setup();
+     writeFileSync(
+       join(agentDir, "fixed-defaults.json"),
+       `${JSON.stringify(
+-        { provider: "zai", model: "glm-5.2", thinkingLevel: "high" },
++        { provider: "zai", model: "glm-5.2", thinkingLevel: "max" },
+         null,
+         2,
+       )}\n`,
+@@ -279,7 +364,6 @@ describe("fixed-defaults", () => {
+     const handler = pi.commands.get("fixed-defaults")!;
+     const notifications: string[] = [];
+ 
+-    pi.level = "xhigh";
+     await handler(
+       "",
+       context(ctx.cwd, { model: model("zai", "glm-5.2"), notifications }),
+@@ -288,7 +372,10 @@ describe("fixed-defaults", () => {
+     const message = notifications[0];
+     expect(message).toContain("pinned provider: zai");
+     expect(message).toContain("pinned model: glm-5.2");
+-    expect(message).toContain("pinned thinking: high");
++    expect(message).not.toContain("pinned thinking");
++    expect(message).not.toContain("\nthinking:");
++    expect(message).toContain("legacy thinkingLevel is present but ignored");
++    expect(message).toContain("/model-thinking");
+     expect(message).toContain(join(agentDir, "fixed-defaults.json"));
+   });
+ 
+@@ -344,6 +431,63 @@ describe("fixed-defaults", () => {
+     expect(message).toContain("no pin active");
+     expect(message).not.toContain("pinned model");
+   });
++
++  test("the legacy thinkingLevel warning is emitted once, not on every read", async () => {
++    const { agentDir, pi, ctx } = setup();
++    writeFileSync(
++      join(agentDir, "fixed-defaults.json"),
++      `${JSON.stringify(
++        { provider: "zai", model: "glm-5.2", thinkingLevel: "max" },
++        null,
++        2,
++      )}\n`,
++    );
++    const warnings: string[][] = [];
++    const originalWarn = console.warn;
++    console.warn = (...args: string[]) => {
++      warnings.push(args);
++    };
++    try {
++      fixedDefaults(pi.api, { agentDir });
++      await pi.emit("session_start", { reason: "startup" }, ctx);
++      await pi.emit(
++        "model_select",
++        {
++          model: { provider: "zai", id: "glm-5.2" },
++          previousModel: undefined,
++          source: "set",
++        },
++        ctx,
++      );
++      await pi.commands.get("fixed-defaults")!("", ctx);
++      expect(warnings.length).toBe(1);
++      expect(warnings[0].join(" ")).toContain("thinkingLevel");
++    } finally {
++      console.warn = originalWarn;
++    }
++  });
++
++  test("set rewrites a legacy override file into the provider/model-only format", async () => {
++    const { agentDir, pi, ctx } = setup();
++    writeFileSync(
++      join(agentDir, "fixed-defaults.json"),
++      `${JSON.stringify(
++        { provider: "zai", model: "glm-5.2", thinkingLevel: "max" },
++        null,
++        2,
++      )}\n`,
++    );
++    fixedDefaults(pi.api, { agentDir });
++    const handler = pi.commands.get("fixed-defaults")!;
++
++    await handler("set", context(ctx.cwd, { model: model("zai", "glm-5.2") }));
++
++    expect(
++      JSON.parse(
++        readFileSync(join(agentDir, "fixed-defaults.json"), "utf8"),
++      ) as unknown,
++    ).toEqual({ provider: "zai", model: "glm-5.2" });
++  });
+ });
+ 
+ function mkdirForFile(path: string): void {
+diff --git a/fixed-defaults.ts b/fixed-defaults.ts
+index cfbf0da..8776975 100644
+--- a/fixed-defaults.ts
++++ b/fixed-defaults.ts
+@@ -4,38 +4,27 @@ import {
+   type ExtensionAPI,
+   type ExtensionContext,
+ } from "@earendil-works/pi-coding-agent";
++import { readFileSync } from "node:fs";
++import { join } from "node:path";
+ import {
+-  mkdirSync,
+-  readFileSync,
+-  renameSync,
+-  unlinkSync,
+-  writeFileSync,
+-} from "node:fs";
+-import { dirname, join } from "node:path";
++  describeError,
++  unlinkIfPresent,
++  writeJsonFileAtomic,
++} from "./json-file.ts";
+ 
+ const CONFIG_FILENAME = "fixed-defaults.json";
+-const ALL_LEVELS = [
+-  "off",
+-  "minimal",
+-  "low",
+-  "medium",
+-  "high",
+-  "xhigh",
+-  "max",
+-] as const;
+-
+-type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
+-
+ /**
+- * Values read from the override file. `thinkingLevel` may layer independently;
+- * `provider` and `model` are a coupled pair — a model id is meaningless without
+- * its provider, so both must be present if either is. Missing fields fall back
+- * to the built-in defaults.
++ * Values read from the override file. `provider` and `model` are a coupled
++ * pair — a model id is meaningless without its provider, so both must be
++ * present if either is.
++ *
++ * `thinkingLevel` was accepted by older versions. It is deliberately ignored
++ * for compatibility; model-thinking.ts is now the sole owner of thinking
++ * policy.
+  */
+ interface FixedDefaultsOverride {
+   provider?: string;
+   model?: string;
+-  thinkingLevel?: ThinkingLevel;
+ }
+ 
+ interface FixedDefaultsOptions {
+@@ -45,17 +34,6 @@ interface FixedDefaultsOptions {
+   configPath?: string;
+ }
+ 
+-function describeError(error: unknown): string {
+-  return error instanceof Error ? error.message : String(error);
+-}
+-
+-function isThinkingLevel(value: unknown): value is ThinkingLevel {
+-  return (
+-    typeof value === "string" &&
+-    (ALL_LEVELS as readonly string[]).includes(value)
+-  );
+-}
+-
+ function parseOverride(value: unknown): FixedDefaultsOverride {
+   if (!value || typeof value !== "object" || Array.isArray(value)) {
+     throw new Error("the top level must be an object");
+@@ -82,18 +60,11 @@ function parseOverride(value: unknown): FixedDefaultsOverride {
+     }
+     override.model = input.model;
+   }
+-  if (input.thinkingLevel !== undefined) {
+-    if (!isThinkingLevel(input.thinkingLevel)) {
+-      throw new Error(
+-        `\`thinkingLevel\` must be one of: ${ALL_LEVELS.join(", ")}`,
+-      );
+-    }
+-    override.thinkingLevel = input.thinkingLevel;
+-  }
+ 
+   // provider and model are a coupled pair — a model id is meaningless without
+   // its provider. Require both if either is present so a hand-edited partial
+-  // file can't pin a broken default. thinkingLevel may still layer alone.
++  // file can't pin a broken default. The legacy thinkingLevel field is
++  // intentionally ignored; model-thinking.ts owns thinking policy.
+   if (
+     (override.provider !== undefined && override.model === undefined) ||
+     (override.model !== undefined && override.provider === undefined)
+@@ -106,6 +77,15 @@ function parseOverride(value: unknown): FixedDefaultsOverride {
+   return override;
+ }
+ 
++function hasLegacyThinkingLevel(value: unknown): boolean {
++  return (
++    value !== null &&
++    typeof value === "object" &&
++    !Array.isArray(value) &&
++    Object.prototype.hasOwnProperty.call(value, "thinkingLevel")
++  );
++}
++
+ /**
+  * Read/write the override file. Reads are uncached (the file is tiny and the
+  * events are rare), so hand edits are picked up without a reload. Writes are
+@@ -113,27 +93,43 @@ function parseOverride(value: unknown): FixedDefaultsOverride {
+  */
+ class DefaultsStore {
+   readonly path: string;
++  private warnedLegacyThinkingLevel = false;
+ 
+   constructor(path: string) {
+     this.path = path;
+   }
+ 
+-  /** Load the override; returns { override: {}, error: null } when missing. */
++  /** Load the override; an absent file is a valid, inactive configuration. */
+   load(): LoadResult {
+     let raw: string;
+     try {
+       raw = readFileSync(this.path, "utf8");
+     } catch (error) {
+       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+-        return { override: {}, error: null };
++        return {
++          present: false,
++          override: {},
++          error: null,
++          legacyThinkingLevel: false,
++        };
+       }
+       throw error;
+     }
+ 
+     try {
++      const value = JSON.parse(raw) as unknown;
++      const legacyThinkingLevel = hasLegacyThinkingLevel(value);
++      if (legacyThinkingLevel && !this.warnedLegacyThinkingLevel) {
++        console.warn(
++          `[fixed-defaults] legacy thinkingLevel found in ${this.path}; it is ignored. Add the policy to model-thinking.json instead.`,
++        );
++        this.warnedLegacyThinkingLevel = true;
++      }
+       return {
+-        override: parseOverride(JSON.parse(raw) as unknown),
++        present: true,
++        override: parseOverride(value),
+         error: null,
++        legacyThinkingLevel,
+       };
+     } catch (error) {
+       const message = describeError(error);
+@@ -141,61 +137,51 @@ class DefaultsStore {
+         `[fixed-defaults] invalid config at ${this.path}:`,
+         message,
+       );
+-      return { override: {}, error: message };
++      return {
++        present: true,
++        override: {},
++        error: message,
++        legacyThinkingLevel: false,
++      };
+     }
+   }
+ 
+   save(override: FixedDefaultsOverride): void {
+-    mkdirSync(dirname(this.path), { recursive: true });
+-    const temporaryPath = `${this.path}.${process.pid}.${Date.now()}.tmp`;
+-
+-    try {
+-      writeFileSync(temporaryPath, `${JSON.stringify(override, null, 2)}\n`, {
+-        encoding: "utf8",
+-        mode: 0o600,
+-      });
+-      renameSync(temporaryPath, this.path);
+-    } catch (error) {
+-      try {
+-        unlinkSync(temporaryPath);
+-      } catch {
+-        // The temporary file usually does not exist when the initial write failed.
+-      }
+-      throw error;
+-    }
++    writeJsonFileAtomic(this.path, override);
++    this.warnedLegacyThinkingLevel = false;
+   }
+ 
+-  reset(): boolean {
+-    try {
+-      unlinkSync(this.path);
+-      return true;
+-    } catch (error) {
+-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+-      throw error;
+-    }
++  reset(): void {
++    // Deletion is intentionally idempotent: if another process removes the
++    // pin after it was loaded, reset has still reached the requested end state.
++    unlinkIfPresent(this.path);
++    this.warnedLegacyThinkingLevel = false;
+   }
+ }
+ 
+ /** Result of reading the override file: the parsed values plus any error. */
+ interface LoadResult {
++  /** Whether the override file existed when it was read. */
++  present: boolean;
+   override: FixedDefaultsOverride;
+   /** Non-null when the file existed but failed to parse or validate. */
+   error: string | null;
++  /** True when an old, ignored thinkingLevel field should be migrated. */
++  legacyThinkingLevel: boolean;
+ }
+ 
+ /**
+- * Keep Pi's cross-session defaults stable while still allowing model changes in
+- * the current session. Pi intentionally saves the last selected model and
+- * thinking level, so this runs after those notifications and restores the
+- * configured startup defaults in the global settings file.
++ * Keep Pi's cross-session provider/model defaults stable while still allowing
++ * model changes in the current session. Pi intentionally saves the last
++ * selected model, so this runs after model-selection notifications and restores
++ * the configured startup model in the global settings file.
+  *
+  * The pin lives in `<agentDir>/fixed-defaults.json` and is the sole source of
+  * truth — there are no built-in defaults, so with no override file the
+  * extension is dormant and Pi's native last-selection behavior is preserved.
+- * `thinkingLevel` may layer independently; `provider` and `model` are a
+- * coupled pair. `/fixed-defaults set` pins the currently active model and
+- * thinking level; `/fixed-defaults reset` stops pinning; `/fixed-defaults`
+- * shows the active pin.
++ * `provider` and `model` are a coupled pair. Thinking policy belongs to
++ * model-thinking.ts. `/fixed-defaults set` pins the currently active model;
++ * `/fixed-defaults reset` stops pinning; `/fixed-defaults` shows the active pin.
+  */
+ export default function fixedDefaults(
+   pi: ExtensionAPI,
+@@ -207,25 +193,15 @@ export default function fixedDefaults(
+   );
+   let pending = Promise.resolve();
+ 
+-  async function restore(ctx: ExtensionContext): Promise<void> {
+-    const { override, error } = store.load();
+-    // A broken or absent override means no pin: leave settings untouched so
+-    // Pi's native last-selection behavior is preserved rather than guessed at.
+-    if (error) return;
+-    const hasModelPin =
+-      override.provider !== undefined && override.model !== undefined;
+-    const hasThinkingPin = override.thinkingLevel !== undefined;
+-    if (!hasModelPin && !hasThinkingPin) return;
+-
++  async function persistModel(
++    ctx: ExtensionContext,
++    provider: string,
++    modelId: string,
++  ): Promise<void> {
+     const settings = SettingsManager.create(ctx.cwd, agentDir, {
+       projectTrusted: ctx.isProjectTrusted(),
+     });
+-    if (hasModelPin) {
+-      settings.setDefaultModelAndProvider(override.provider!, override.model!);
+-    }
+-    if (hasThinkingPin) {
+-      settings.setDefaultThinkingLevel(override.thinkingLevel!);
+-    }
++    settings.setDefaultModelAndProvider(provider, modelId);
+     await settings.flush();
+ 
+     const errors = settings.drainErrors();
+@@ -237,23 +213,47 @@ export default function fixedDefaults(
+     }
+   }
+ 
+-  function schedule(ctx: ExtensionContext): Promise<void> {
+-    const operation = pending.then(() => restore(ctx));
+-    // Keep later notifications serviceable after one failed write. The
+-    // original operation is still returned so Pi can report that failure.
+-    pending = operation.catch((error: unknown) => {
+-      console.error("[fixed-defaults] failed to restore defaults:", error);
+-    });
+-    return operation;
++  async function restore(ctx: ExtensionContext): Promise<void> {
++    const { override, error } = store.load();
++    // A broken or absent override means no pin: leave settings untouched so
++    // Pi's native last-selection behavior is preserved rather than guessed at.
++    if (error) return;
++    const hasModelPin =
++      override.provider !== undefined && override.model !== undefined;
++    if (!hasModelPin) return;
++
++    await persistModel(ctx, override.provider!, override.model!);
++  }
++
++  function enqueue<T>(
++    operation: () => Promise<T>,
++    failureMessage: string,
++  ): Promise<T> {
++    const queued = pending.then(operation);
++    // Log once at the queue boundary, then recover only the internal tail so a
++    // failed write does not prevent later operations. The returned promise
++    // still rejects, allowing commands to notify the user.
++    pending = queued.then(
++      () => undefined,
++      (error: unknown) => {
++        console.error(failureMessage, error);
++      },
++    );
++    return queued;
++  }
++
++  function schedule(
++    ctx: ExtensionContext,
++    failureMessage = "[fixed-defaults] failed to restore defaults:",
++  ): Promise<void> {
++    return enqueue(() => restore(ctx), failureMessage);
+   }
+ 
+   pi.on("session_start", (_event, ctx) => schedule(ctx));
+   pi.on("model_select", (_event, ctx) => schedule(ctx));
+-  pi.on("thinking_level_select", (_event, ctx) => schedule(ctx));
+ 
+   pi.registerCommand("fixed-defaults", {
+-    description:
+-      "Show, set, or reset the pinned startup model/thinking defaults",
++    description: "Show, set, or reset the pinned startup model",
+     handler: async (args, ctx) => {
+       const command = args.trim();
+ 
+@@ -267,11 +267,9 @@ export default function fixedDefaults(
+           return;
+         }
+ 
+-        const level = pi.getThinkingLevel();
+         const override: FixedDefaultsOverride = {
+           provider: model.provider,
+           model: model.id,
+-          thinkingLevel: level,
+         };
+         try {
+           store.save(override);
+@@ -283,10 +281,9 @@ export default function fixedDefaults(
+ 
+         try {
+           // Bring settings.json in line with the new pin right away instead
+-          // of waiting for the next model/thinking/session event.
+-          await schedule(ctx);
+-        } catch (error) {
+-          console.error("[fixed-defaults] failed to apply override:", error);
++          // of waiting for the next model/session event.
++          await schedule(ctx, "[fixed-defaults] failed to apply override:");
++        } catch {
+           ctx.ui.notify(
+             "Defaults saved, but applying them to settings.json failed.",
+             "warning",
+@@ -295,31 +292,74 @@ export default function fixedDefaults(
+         }
+ 
+         ctx.ui.notify(
+-          `Pinned ${model.provider}/${model.id} · thinking ${level} as startup defaults`,
++          `Pinned ${model.provider}/${model.id} as the startup model`,
+           "info",
+         );
+         return;
+       }
+ 
+       if (command === "reset") {
+-        let removed: boolean;
++        type ResetResult =
++          | { status: "missing" }
++          | { status: "removed-inactive" }
++          | { status: "no-active-model" }
++          | {
++              status: "removed";
++              model: NonNullable<ExtensionContext["model"]>;
++            };
++
+         try {
+-          removed = store.reset();
+-        } catch (error) {
+-          console.error("[fixed-defaults] failed to reset override:", error);
+-          ctx.ui.notify("Failed to reset fixed defaults.", "error");
+-          return;
++          const result = await enqueue<ResetResult>(async () => {
++            // Load and validate before touching settings. Invalid, legacy-only,
++            // and partial files are inactive, so remove them without replacing
++            // Pi's last selection with the currently active model.
++            const loaded = store.load();
++            if (!loaded.present) return { status: "missing" };
++
++            const hasModelPin =
++              loaded.error === null &&
++              loaded.override.provider !== undefined &&
++              loaded.override.model !== undefined;
++            if (!hasModelPin) {
++              store.reset();
++              return { status: "removed-inactive" };
++            }
++
++            const model = ctx.model;
++            if (!model) return { status: "no-active-model" };
++
++            // Save the active model before removing the valid pin. Otherwise
++            // the old pinned model remains in settings.json and wins at the
++            // next fresh start.
++            await persistModel(ctx, model.provider, model.id);
++            store.reset();
++            return { status: "removed", model };
++          }, "[fixed-defaults] failed to reset override:");
++
++          if (result.status === "missing") {
++            ctx.ui.notify("No fixed-defaults override file to reset.", "info");
++          } else if (result.status === "removed-inactive") {
++            ctx.ui.notify(
++              "Inactive or invalid fixed-defaults override removed; settings were left unchanged.",
++              "info",
++            );
++          } else if (result.status === "no-active-model") {
++            ctx.ui.notify(
++              "Cannot reset fixed defaults without an active model; the pin was left in place.",
++              "warning",
++            );
++          } else {
++            ctx.ui.notify(
++              `Fixed-defaults pin removed. Pi will use ${result.model.provider}/${result.model.id} as its last selection.`,
++              "info",
++            );
++          }
++        } catch {
++          ctx.ui.notify(
++            "Failed to reset fixed defaults. Pin removal could not be confirmed; settings may already reflect the active model.",
++            "error",
++          );
+         }
+-
+-        // Removing the override makes future events no-ops; there is nothing
+-        // to apply to settings.json now. Existing defaults are left as-is so
+-        // reset means "stop pinning," not "revert to an earlier state."
+-        ctx.ui.notify(
+-          removed
+-            ? "Fixed-defaults pin removed. Pi will use your last selection."
+-            : "No fixed-defaults override file to reset.",
+-          "info",
+-        );
+         return;
+       }
+ 
+@@ -328,11 +368,10 @@ export default function fixedDefaults(
+         return;
+       }
+ 
+-      const { override, error } = store.load();
++      const { override, error, legacyThinkingLevel } = store.load();
+       const model = ctx.model;
+       const lines = [
+         `model: ${model ? `${model.provider}/${model.id}` : "none"}`,
+-        `thinking: ${pi.getThinkingLevel()}`,
+         "",
+       ];
+       if (error) {
+@@ -344,14 +383,17 @@ export default function fixedDefaults(
+           lines.push(`pinned provider: ${override.provider}`);
+           lines.push(`pinned model: ${override.model}`);
+         }
+-        if (override.thinkingLevel !== undefined) {
+-          lines.push(`pinned thinking: ${override.thinkingLevel}`);
+-        }
++      }
++      if (legacyThinkingLevel) {
++        lines.push(
++          "",
++          "⚠ legacy thinkingLevel is present but ignored; manage it with /model-thinking",
++        );
+       }
+       lines.push("", `override file: ${store.path}`);
+       lines.push(
+         "",
+-        "run `/fixed-defaults set` to pin the current model and thinking level; `/fixed-defaults reset` to stop pinning",
++        "run `/fixed-defaults set` to pin the current model; `/fixed-defaults reset` to stop pinning",
+       );
+       const message = lines.join("\n");
+ 
+diff --git a/index.ts b/index.ts
+index a355944..884bc84 100644
+--- a/index.ts
++++ b/index.ts
+@@ -9,7 +9,7 @@
+  *   - zed              /z                open Zed on cwd
+  *   - prefer-tools     hook              block legacy tools (use trash/rg/fd/uv)
+  *   - model-thinking   hook + command    remember thinking levels by provider/model
+- *   - fixed-defaults   hook + command    keep startup defaults stable; /fixed-defaults set pins the current model
++ *   - fixed-defaults   hook + command    keep startup provider/model stable; /fixed-defaults set pins the current model
+  *   - kilo             provider          access Kilo Gateway models
+  *   - provider-balance footer            show Kilo credits or Codex quota in the footer
+  *   - tps              hook              notify tokens/sec and usage at each agent turn end
+diff --git a/json-file.ts b/json-file.ts
+new file mode 100644
+index 0000000..f5a5ed2
+--- /dev/null
++++ b/json-file.ts
+@@ -0,0 +1,44 @@
++import { randomUUID } from "node:crypto";
++import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
++import { dirname } from "node:path";
++
++export function describeError(error: unknown): string {
++  return error instanceof Error ? error.message : String(error);
++}
++
++/** Write JSON atomically without exposing a partially written config file. */
++export function writeJsonFileAtomic(path: string, value: unknown): void {
++  mkdirSync(dirname(path), { recursive: true });
++  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
++
++  try {
++    writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
++      encoding: "utf8",
++      mode: 0o600,
++    });
++    renameSync(temporaryPath, path);
++  } catch (writeError) {
++    try {
++      unlinkSync(temporaryPath);
++    } catch (cleanupError) {
++      if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") {
++        throw new AggregateError(
++          [writeError, cleanupError],
++          `failed to write ${path} and clean up ${temporaryPath}`,
++        );
++      }
++    }
++    throw writeError;
++  }
++}
++
++/** Delete a file if present; surface every error except an absent file. */
++export function unlinkIfPresent(path: string): boolean {
++  try {
++    unlinkSync(path);
++    return true;
++  } catch (error) {
++    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
++    throw error;
++  }
++}
+diff --git a/model-policy.test.ts b/model-policy.test.ts
+new file mode 100644
+index 0000000..23fb3e1
+--- /dev/null
++++ b/model-policy.test.ts
+@@ -0,0 +1,282 @@
++import { afterEach, describe, expect, test } from "bun:test";
++import type {
++  ExtensionAPI,
++  ExtensionContext,
++} from "@earendil-works/pi-coding-agent";
++import {
++  existsSync,
++  mkdirSync,
++  mkdtempSync,
++  readFileSync,
++  rmSync,
++  writeFileSync,
++} from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import fixedDefaults from "./fixed-defaults.ts";
++import modelThinking from "./model-thinking.ts";
++
++type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
++type Handler = (event: never, ctx: ExtensionContext) => unknown;
++type CommandHandler = (
++  args: string,
++  ctx: ExtensionContext,
++) => Promise<void> | void;
++
++const temporaryDirectories: string[] = [];
++
++afterEach(() => {
++  for (const directory of temporaryDirectories.splice(0)) {
++    rmSync(directory, { recursive: true, force: true });
++  }
++});
++
++function model(
++  provider: string,
++  id: string,
++): NonNullable<ExtensionContext["model"]> {
++  return { provider, id } as NonNullable<ExtensionContext["model"]>;
++}
++
++function context(
++  cwd: string,
++  activeModel: NonNullable<ExtensionContext["model"]>,
++  notifications: string[] = [],
++): ExtensionContext {
++  return {
++    cwd,
++    model: activeModel,
++    hasUI: true,
++    isProjectTrusted: () => true,
++    ui: {
++      notify(message: string) {
++        notifications.push(message);
++      },
++    },
++  } as unknown as ExtensionContext;
++}
++
++function readSettings(path: string): Record<string, unknown> {
++  return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
++}
++
++class PiHarness {
++  readonly handlers = new Map<string, Handler[]>();
++  readonly commands = new Map<string, CommandHandler>();
++
++  constructor(
++    private readonly settingsPath: string,
++    public level: ThinkingLevel = "max",
++  ) {}
++
++  readonly api = {
++    on: (event: string, handler: Handler) => {
++      const handlers = this.handlers.get(event) ?? [];
++      handlers.push(handler);
++      this.handlers.set(event, handlers);
++    },
++    registerCommand: (name: string, command: { handler: CommandHandler }) => {
++      this.commands.set(name, command.handler);
++    },
++    getThinkingLevel: () => this.level,
++    setThinkingLevel: (requested: ThinkingLevel) => {
++      if (requested === this.level) return;
++      this.level = requested;
++
++      // Pi marks a changed thinking default for persistence when this API is
++      // called. Write it immediately here so the eventual disk state is
++      // deterministic without reproducing Pi's debounced flush machinery.
++      const settings = readSettings(this.settingsPath);
++      settings.defaultThinkingLevel = requested;
++      writeFileSync(
++        this.settingsPath,
++        `${JSON.stringify(settings, null, 2)}\n`,
++      );
++    },
++  } as unknown as ExtensionAPI;
++
++  async emit(event: string, payload: object, ctx: ExtensionContext) {
++    for (const handler of this.handlers.get(event) ?? []) {
++      await handler(payload as never, ctx);
++    }
++  }
++
++  async selectModel(
++    cwd: string,
++    previousModel: NonNullable<ExtensionContext["model"]>,
++    nextModel: NonNullable<ExtensionContext["model"]>,
++  ): Promise<ExtensionContext> {
++    // AgentSession saves provider/model before emitting model_select.
++    const settings = readSettings(this.settingsPath);
++    settings.defaultProvider = nextModel.provider;
++    settings.defaultModel = nextModel.id;
++    writeFileSync(this.settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
++
++    const nextContext = context(cwd, nextModel);
++    await this.emit(
++      "model_select",
++      {
++        model: nextModel,
++        previousModel,
++        source: "set",
++      },
++      nextContext,
++    );
++    return nextContext;
++  }
++}
++
++interface Fixture {
++  agentDir: string;
++  cwd: string;
++  fixedDefaultsPath: string;
++  modelThinkingPath: string;
++  settingsPath: string;
++}
++
++function fixture(): Fixture {
++  const directory = mkdtempSync(join(tmpdir(), "model-policy-test-"));
++  temporaryDirectories.push(directory);
++  const agentDir = join(directory, "agent");
++  mkdirSync(agentDir, { recursive: true });
++  return {
++    agentDir,
++    cwd: join(directory, "project"),
++    fixedDefaultsPath: join(agentDir, "fixed-defaults.json"),
++    modelThinkingPath: join(agentDir, "model-thinking.json"),
++    settingsPath: join(agentDir, "settings.json"),
++  };
++}
++
++function writeJson(path: string, value: unknown): void {
++  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
++}
++
++function registerPolicies(pi: PiHarness, paths: Fixture): void {
++  // This matches the production registration order in index.ts.
++  modelThinking(pi.api, { configPath: paths.modelThinkingPath });
++  fixedDefaults(pi.api, { agentDir: paths.agentDir });
++}
++
++describe("model policy extensions", () => {
++  test("a legacy pin cannot override thinking in the current or next fresh session", async () => {
++    const paths = fixture();
++    writeJson(paths.settingsPath, {
++      defaultProvider: "zai",
++      defaultModel: "glm-5.2",
++      defaultThinkingLevel: "max",
++    });
++    writeJson(paths.fixedDefaultsPath, {
++      provider: "opencode",
++      model: "deepseek-v4-flash-free",
++      thinkingLevel: "max",
++    });
++    writeJson(paths.modelThinkingPath, {
++      models: {
++        "zai/glm-5.2": "high",
++        "opencode/deepseek-v4-flash-free": "high",
++      },
++    });
++
++    const firstPi = new PiHarness(paths.settingsPath);
++    registerPolicies(firstPi, paths);
++    const firstContext = context(paths.cwd, model("zai", "glm-5.2"));
++
++    await firstPi.emit("session_start", { reason: "startup" }, firstContext);
++
++    // Pi chose GLM before session_start. The pin changes only the saved model;
++    // model-thinking alone changes active and persisted thinking.
++    expect(firstContext.model).toEqual(model("zai", "glm-5.2"));
++    expect(firstPi.level).toBe("high");
++    expect(readSettings(paths.settingsPath)).toEqual({
++      defaultProvider: "opencode",
++      defaultModel: "deepseek-v4-flash-free",
++      defaultThinkingLevel: "high",
++    });
++
++    // Simulate Pi's next fresh startup resolving the model from settings.json.
++    const secondPi = new PiHarness(paths.settingsPath, "high");
++    registerPolicies(secondPi, paths);
++    const secondContext = context(
++      paths.cwd,
++      model("opencode", "deepseek-v4-flash-free"),
++    );
++    await secondPi.emit("session_start", { reason: "startup" }, secondContext);
++
++    expect(secondContext.model).toEqual(
++      model("opencode", "deepseek-v4-flash-free"),
++    );
++    expect(secondPi.level).toBe("high");
++    expect(readSettings(paths.settingsPath)).toEqual({
++      defaultProvider: "opencode",
++      defaultModel: "deepseek-v4-flash-free",
++      defaultThinkingLevel: "high",
++    });
++  });
++
++  test("model selection applies thinking while restoring only the pinned model", async () => {
++    const paths = fixture();
++    writeJson(paths.settingsPath, {
++      defaultProvider: "zai",
++      defaultModel: "glm-5.2",
++      defaultThinkingLevel: "max",
++    });
++    writeJson(paths.fixedDefaultsPath, {
++      provider: "opencode",
++      model: "deepseek-v4-flash-free",
++    });
++    writeJson(paths.modelThinkingPath, {
++      models: { "anthropic/claude-sonnet-4": "low" },
++    });
++
++    const pi = new PiHarness(paths.settingsPath);
++    registerPolicies(pi, paths);
++    await pi.selectModel(
++      paths.cwd,
++      model("zai", "glm-5.2"),
++      model("anthropic", "claude-sonnet-4"),
++    );
++
++    expect(pi.level).toBe("low");
++    expect(readSettings(paths.settingsPath)).toEqual({
++      defaultProvider: "opencode",
++      defaultModel: "deepseek-v4-flash-free",
++      defaultThinkingLevel: "low",
++    });
++  });
++
++  test("reset removes only the model pin and preserves thinking policy", async () => {
++    const paths = fixture();
++    const thinkingConfig = {
++      models: { "zai/glm-5.2": "high" },
++    };
++    writeJson(paths.settingsPath, {
++      defaultProvider: "opencode",
++      defaultModel: "deepseek-v4-flash-free",
++      defaultThinkingLevel: "max",
++    });
++    writeJson(paths.fixedDefaultsPath, {
++      provider: "opencode",
++      model: "deepseek-v4-flash-free",
++      thinkingLevel: "max",
++    });
++    writeJson(paths.modelThinkingPath, thinkingConfig);
++
++    const pi = new PiHarness(paths.settingsPath);
++    registerPolicies(pi, paths);
++    const activeContext = context(paths.cwd, model("zai", "glm-5.2"));
++    await pi.emit("session_start", { reason: "startup" }, activeContext);
++    await pi.commands.get("fixed-defaults")!("reset", activeContext);
++
++    expect(existsSync(paths.fixedDefaultsPath)).toBe(false);
++    expect(JSON.parse(readFileSync(paths.modelThinkingPath, "utf8"))).toEqual(
++      thinkingConfig,
++    );
++    expect(pi.level).toBe("high");
++    expect(readSettings(paths.settingsPath)).toEqual({
++      defaultProvider: "zai",
++      defaultModel: "glm-5.2",
++      defaultThinkingLevel: "high",
++    });
++  });
++});
+diff --git a/model-thinking.test.ts b/model-thinking.test.ts
+index 11d9e76..38894e8 100644
+--- a/model-thinking.test.ts
++++ b/model-thinking.test.ts
+@@ -3,7 +3,14 @@ import type {
+   ExtensionAPI,
+   ExtensionContext,
+ } from "@earendil-works/pi-coding-agent";
+-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
++import {
++  mkdtempSync,
++  readFileSync,
++  rmSync,
++  statSync,
++  utimesSync,
++  writeFileSync,
++} from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import modelThinking from "./model-thinking.ts";
+@@ -42,12 +49,15 @@ function model(
+ 
+ function context(
+   activeModel: NonNullable<ExtensionContext["model"]>,
++  notifications: string[] = [],
+ ): ExtensionContext {
+   return {
+     model: activeModel,
+     hasUI: true,
+     ui: {
+-      notify() {},
++      notify(message: string) {
++        notifications.push(message);
++      },
+     },
+   } as unknown as ExtensionContext;
+ }
+@@ -235,6 +245,94 @@ describe("model-thinking", () => {
+     });
+   });
+ 
++  test("set refuses to overwrite malformed config", async () => {
++    const path = temporaryConfig();
++    writeFileSync(path, "{ not valid json\n");
++    const pi = new PiHarness();
++    modelThinking(pi.api, { configPath: path });
++    const notifications: string[] = [];
++    const ctx = context(model("unmanaged", "model"), notifications);
++
++    await pi.commands.get("model-thinking")!("set", ctx);
++
++    expect(readFileSync(path, "utf8")).toBe("{ not valid json\n");
++    expect(notifications.some((message) => message.includes("Repair"))).toBe(
++      true,
++    );
++  });
++
++  test("reloads a repaired config even when size and mtime are unchanged", () => {
++    const path = temporaryConfig();
++    const unchangedMtime = 1_700_000_000;
++    const invalid = '{"providers":{"a":"????"}}\n';
++    const repaired = '{"providers":{"a":"high"}}\n';
++    expect(Buffer.byteLength(invalid)).toBe(Buffer.byteLength(repaired));
++    writeFileSync(path, invalid);
++    utimesSync(path, unchangedMtime, unchangedMtime);
++
++    const pi = new PiHarness();
++    modelThinking(pi.api, { configPath: path });
++    const ctx = context(model("a", "model"));
++
++    pi.emit("session_start", { reason: "startup" }, ctx);
++    expect(pi.level).toBe("off");
++
++    writeFileSync(path, repaired);
++    utimesSync(path, unchangedMtime, unchangedMtime);
++    expect(statSync(path).size).toBe(Buffer.byteLength(invalid));
++
++    pi.emit("session_start", { reason: "reload" }, ctx);
++
++    expect(pi.level).toBe("high");
++  });
++
++  test("status reports malformed config instead of treating it as empty", async () => {
++    const path = temporaryConfig();
++    writeFileSync(path, "{ not valid json\n");
++    const pi = new PiHarness();
++    modelThinking(pi.api, { configPath: path });
++    const notifications: string[] = [];
++    const ctx = context(model("unmanaged", "model"), notifications);
++
++    await pi.commands.get("model-thinking")!("", ctx);
++
++    expect(notifications[0]).toContain("config invalid");
++    expect(notifications[0]).toContain("no policy applied");
++  });
++
++  test("set refuses to overwrite a config with an invalid thinking level", async () => {
++    const path = temporaryConfig();
++    const broken = { models: { "unmanaged/model": "turbo" } };
++    writeFileSync(path, `${JSON.stringify(broken, null, 2)}\n`);
++    const pi = new PiHarness();
++    modelThinking(pi.api, { configPath: path });
++    const notifications: string[] = [];
++    const ctx = context(model("unmanaged", "model"), notifications);
++
++    await pi.commands.get("model-thinking")!("set", ctx);
++
++    // Valid JSON but an invalid shape must not be treated as an empty policy
++    // either: `set` refuses to overwrite it.
++    expect(readFileSync(path, "utf8")).toBe(
++      `${JSON.stringify(broken, null, 2)}\n`,
++    );
++    expect(notifications.some((message) => message.includes("Repair"))).toBe(
++      true,
++    );
++  });
++
++  test("reset explicitly clears malformed config", async () => {
++    const path = temporaryConfig();
++    writeFileSync(path, "{ not valid json\n");
++    const pi = new PiHarness();
++    modelThinking(pi.api, { configPath: path });
++    const ctx = context(model("unmanaged", "model"));
++
++    await pi.commands.get("model-thinking")!("reset", ctx);
++
++    expect(() => readFileSync(path, "utf8")).toThrow();
++  });
++
+   test("leaves unmanaged models to Pi and does not create a config", () => {
+     const path = temporaryConfig();
+     const pi = new PiHarness();
+diff --git a/model-thinking.ts b/model-thinking.ts
+index 94d118c..0d36be1 100644
+--- a/model-thinking.ts
++++ b/model-thinking.ts
+@@ -3,15 +3,13 @@ import {
+   type ExtensionAPI,
+   type ExtensionContext,
+ } from "@earendil-works/pi-coding-agent";
++import { readFileSync, statSync } from "node:fs";
++import { join } from "node:path";
+ import {
+-  mkdirSync,
+-  readFileSync,
+-  renameSync,
+-  statSync,
+-  unlinkSync,
+-  writeFileSync,
+-} from "node:fs";
+-import { dirname, join } from "node:path";
++  describeError,
++  unlinkIfPresent,
++  writeJsonFileAtomic,
++} from "./json-file.ts";
+ 
+ const CONFIG_FILENAME = "model-thinking.json";
+ const ALL_LEVELS = [
+@@ -99,86 +97,81 @@ function fileStamp(path: string): string | undefined {
+   }
+ }
+ 
++interface ConfigLoadResult {
++  config: ModelThinkingConfig;
++  /** Non-null when the file exists but could not be read or validated. */
++  error: string | null;
++}
++
+ class ConfigStore {
+   readonly path: string;
+   private initialized = false;
+   private cachedStamp: string | undefined;
+-  private cachedConfig: ModelThinkingConfig = {};
++  private cachedResult: ConfigLoadResult = { config: {}, error: null };
+ 
+   constructor(path: string) {
+     this.path = path;
+   }
+ 
+-  load(): ModelThinkingConfig {
++  load(): ConfigLoadResult {
+     let stamp: string | undefined;
+     try {
+       stamp = fileStamp(this.path);
+     } catch (error) {
+-      console.error(`[model-thinking] failed to stat ${this.path}:`, error);
+-      return {};
++      const message = describeError(error);
++      console.error(`[model-thinking] failed to stat ${this.path}:`, message);
++      return { config: {}, error: message };
+     }
+ 
+-    if (this.initialized && stamp === this.cachedStamp) {
+-      return this.cachedConfig;
++    // Keep retrying a file that previously failed to load. A repair can leave
++    // its size and mtime unchanged, so an error result must not be cached by
++    // the same stamp as a successful read.
++    if (
++      this.initialized &&
++      stamp === this.cachedStamp &&
++      this.cachedResult.error === null
++    ) {
++      return this.cachedResult;
+     }
+ 
+     this.initialized = true;
+     this.cachedStamp = stamp;
+     if (stamp === undefined) {
+-      this.cachedConfig = {};
+-      return this.cachedConfig;
++      this.cachedResult = { config: {}, error: null };
++      return this.cachedResult;
+     }
+ 
+     try {
+-      this.cachedConfig = parseConfig(
+-        JSON.parse(readFileSync(this.path, "utf8")) as unknown,
+-      );
++      this.cachedResult = {
++        config: parseConfig(
++          JSON.parse(readFileSync(this.path, "utf8")) as unknown,
++        ),
++        error: null,
++      };
+     } catch (error) {
++      const message = describeError(error);
+       console.error(
+         `[model-thinking] invalid config at ${this.path}:`,
+-        error instanceof Error ? error.message : error,
++        message,
+       );
+-      this.cachedConfig = {};
++      this.cachedResult = { config: {}, error: message };
+     }
+-    return this.cachedConfig;
++    return this.cachedResult;
+   }
+ 
+   save(config: ModelThinkingConfig): void {
+-    mkdirSync(dirname(this.path), { recursive: true });
+-    const temporaryPath = `${this.path}.${process.pid}.${Date.now()}.tmp`;
+-
+-    try {
+-      writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, {
+-        encoding: "utf8",
+-        mode: 0o600,
+-      });
+-      renameSync(temporaryPath, this.path);
+-    } catch (error) {
+-      try {
+-        unlinkSync(temporaryPath);
+-      } catch {
+-        // The temporary file usually does not exist when the initial write failed.
+-      }
+-      throw error;
+-    }
+-
+-    this.cachedConfig = config;
++    writeJsonFileAtomic(this.path, config);
++    this.cachedResult = { config, error: null };
+     this.cachedStamp = fileStamp(this.path);
+     this.initialized = true;
+   }
+ 
+   reset(): boolean {
+-    try {
+-      unlinkSync(this.path);
+-    } catch (error) {
+-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+-      throw error;
+-    }
+-
++    const removed = unlinkIfPresent(this.path);
+     this.initialized = true;
+     this.cachedStamp = undefined;
+-    this.cachedConfig = {};
+-    return true;
++    this.cachedResult = { config: {}, error: null };
++    return removed;
+   }
+ }
+ 
+@@ -207,8 +200,13 @@ export default function modelThinking(
+   );
+   function apply(ctx: ExtensionContext, silent: boolean): void {
+     const model = ctx.model;
+-    const level = resolveThinkingLevel(store.load(), model);
+-    if (!model || level === undefined) return;
++    const loaded = store.load();
++    // Never treat a broken file as an empty policy: doing so would hide the
++    // error and make a later `/model-thinking set` overwrite it.
++    if (loaded.error || !model) return;
++
++    const level = resolveThinkingLevel(loaded.config, model);
++    if (level === undefined) return;
+ 
+     const before = pi.getThinkingLevel();
+     pi.setThinkingLevel(level);
+@@ -246,10 +244,18 @@ export default function modelThinking(
+         const key = modelKey(model);
+         const level = pi.getThinkingLevel();
+         try {
+-          const config = store.load();
++          const loaded = store.load();
++          if (loaded.error) {
++            ctx.ui.notify(
++              `Cannot save model-thinking config: ${loaded.error}. Repair ${store.path} or run /model-thinking reset first.`,
++              "error",
++            );
++            return;
++          }
++
+           store.save({
+-            ...config,
+-            models: { ...config.models, [key]: level },
++            ...loaded.config,
++            models: { ...loaded.config.models, [key]: level },
+           });
+           ctx.ui.notify(`Saved ${key}: ${level}`, "info");
+         } catch (error) {
+@@ -284,14 +290,19 @@ export default function modelThinking(
+       }
+ 
+       const model = ctx.model;
+-      const config = store.load();
+-      const resolved = resolveThinkingLevel(config, model);
++      const loaded = store.load();
++      const resolved = loaded.error
++        ? undefined
++        : resolveThinkingLevel(loaded.config, model);
+       const lines = [
+         `model: ${model ? modelKey(model) : "none"}`,
+         `managed: ${resolved === undefined ? "no" : "yes"}`,
+         `file: ${store.path}`,
+         `saved: ${resolved ?? "none — pi handles this model natively"}`,
+         `current: ${pi.getThinkingLevel()}`,
++        ...(loaded.error
++          ? [`⚠ config invalid — no policy applied: ${loaded.error}`]
++          : []),
+         "",
+         "run `/model-thinking set` to save this model and level; `/model-thinking reset` to clear all configured levels",
+       ];

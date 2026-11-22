@@ -1,0 +1,61 @@
+schema_version = "1.3"
+artifacts = []
+
+[task]
+name = "bermudi/stitch-self-update"
+description = "Add a checksum-verified, atomic self-update command to the Stitch Linux CLI."
+authors = [{ name = "bermudi", email = "github.igizp@dabg.uk" }]
+keywords = ["rust", "cli", "self-update", "release", "atomicity", "security"]
+
+[metadata]
+base_commit = "8a78284811abbaa0215a31a2912277276726e115"
+base_repo = "stitch"
+base_tag = "v0.14.2"
+base_curation = "v0.14.2 committed tree + Cargo.lock stitch package version 0.14.2"
+solution_commit = "TBD — real implementation does not exist yet"
+
+[environment]
+network_mode = "no-network"
+build_timeout_sec = 900.0
+os = "linux"
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+
+[environment.env]
+
+[verifier]
+timeout_sec = 1200.0
+network_mode = "no-network"
+environment_mode = "separate"
+
+[verifier.env]
+
+[verifier.environment]
+build_timeout_sec = 900.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+os = "linux"
+network_mode = "no-network"
+
+[[verifier.collect]]
+command = """
+set -e
+mkdir -p /logs/artifacts
+cd /app
+if git rev-parse --verify base >/dev/null 2>&1; then BASE=base; else BASE=HEAD; fi
+git add -A
+git diff --binary "$BASE" -- > /logs/artifacts/model.patch
+touch /logs/artifacts/model.patch
+"""
+timeout_sec = 30.0
+
+[agent]
+timeout_sec = 3600.0
+network_mode = "no-network"
+
+[solution]
+# Pending until the real Stitch implementation is complete and reviewed.
+
+[solution.env]

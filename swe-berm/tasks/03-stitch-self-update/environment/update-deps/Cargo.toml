@@ -1,0 +1,11 @@
+[package]
+name = "stitch-update-dependency-cache"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+flate2 = "=1.1.9"
+semver = "=1.0.27"
+tar = "=0.4.46"
+ureq = "=2.12.1"

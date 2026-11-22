@@ -1,0 +1,672 @@
+# Changelog
+
+## Unreleased
+
+## 0.14.2 — 2026-08-22
+
+### Fixed
+
+- **`stitch add ~` can no longer relocate `$HOME`.** `add` now rejects the resolved home directory (and its `~/`-spelled variants) before any filesystem mutation, with a clear usage error. Previously the adopt path moved `$HOME` and then failed an internal home-identity check whose rollback was provably unable to restore it, leaving the entire home stranded inside the repo.
+- **`apply --force` can no longer displace `$HOME`.** A whole-directory store with `target = "~"` under `--force` previously renamed `$HOME` to `$HOME.bak` and replaced it with a repo symlink, reporting success. Direct `apply` and plan execution now refuse to back up and link the resolved home directory.
+- **`apply` no longer hangs on a FIFO config/state file.** The snapshot loader opens with `O_NONBLOCK`, so a no-writer FIFO fails fast with the same non-regular-file error other commands already produce, instead of blocking forever on `open(2)`.
+- **Link-collision and plan-source resolution are no longer quadratic.** `check_link_path_collisions`, `check_link_name_collisions`, and same-store target-overlap validation now use index/trie-style ancestor lookups; plan construction resolves each store's link sources once. A 20,000-file `patterns = ["**"]` store now resolves in ~1.4s (was >120s).
+
+## 0.14.1 — 2026-08-21
+
+### Fixed
+
+- **Sweep stops at other stores' target directories.** The v0.14 sources sweep broke the hub fan-in layout: a store owning `~/.config` declaring `agents/AGENTS.md` via `sources`, while nested stores owning `~/.config/kilo` and `~/.config/mimocode` link the same real file by its own name. The ancestor's declared-source ownership check classified the nested stores' healthy links as its own stale, repointed entries and deleted them — every apply fought the previous one, so repeated applies never converged. `reconcile_store_links` now prunes any strictly-nested configured target dir before descending; ancestor and equal targets are filtered out so they cannot prune the entire walk. Inactive (`when`-gated) stores are included so a platform-skipped store's links are not swept by an ancestor either.
+
+## 0.14.0 — 2026-08-21
+
+### Added
+
+- **Sources primitive** — `files` entries gain a decoupled `sources` map (`target-name → repo-relative source`). `files = ["AGENTS.md"]` keeps its implicit `store-dir/AGENTS.md`; `sources = { "rules.md" = "agents/AGENTS.md" }` says "this target path's content lives elsewhere in the repo." Repo-root-relative, no escapes, no `.stitch/` or symlinked sources, no whole-dir `sources`. Two names may share one source (hub fan-in) and sources may point into another store's directory. Kills the repo-internal alias-symlink workaround (e.g. `agents/rules.md → AGENTS.md`).
+- `stitch add <path> --source <repo-relative>` — register a target path with an explicit source without moving files; existing repo-pointing symlinks are adopted as `sources` entries.
+- `stitch remove` now refuses to delete a source file still referenced by another store's `sources`; `--force` retains the file and reports `retained_sources[]` (text + JSON). New red line: never destroys a source another store still references.
+- `stitch why <repo-path>` reverse lookup — "consumed by: `<store>:<target>` …" for shared sources; `why <target>` gains `source` field.
+- Template staging is per-consumer: a shared template source renders into the consumer's `.stitch/render/<store>/` with its own hooks, never another store's staging.
+- `status` marks source-mapped links (`AGENTS.md ← agents/AGENTS.md`) in text and JSON; `explain`/`doctor` gain source awareness and new validation findings (alias-symlink warning, source escapes, collisions).
+
+### Changed
+
+- Executable plan schema is now **3** (was 2); old plans are rejected. Plan ops now carry explicit `store` identity and `source` fields; validation ensures backup, target and source constraints and rejects stale or non-executable plans before mutation.
+- New store types are split: `GeneratedStore`/`GeneratedTarget` hold `sources` separately from `Authored*` behavior, merged via name.
+
+### Fixed
+
+- Apply no longer cleans up links under **inactive** `when` targets at separate directories (shared directories still union their keep sets).
+- `sources` keys where one is an ancestor of another (e.g. `foo` and `foo/bar`) are rejected at validation before any mutation — no partial `foo` creates.
+- Symlinked `$HOME` is now treated as the **same physical directory**: `~/out` vs `/realhome/out` aliases are recognized as colliding, canonical-equivalent targets share one unioned keep set (no sweep-deletes-each-other), and `plan` now allows the configured HOME symlink itself while still rejecting gateways below HOME.
+- Ancestor `..` in link targets is now evaluated with POSIX-correct sympathy (hook `HOME` replacement, gateway detection) rather than lexical rejection.
+
+## 0.13.0 — 2026-08-20
+
+### Added
+
+- `stitch explain` — show the fully-resolved, host-evaluated desired state
+  (the merged view of `stitch.toml` + `.stitch/state.toml` with `when` clauses
+  evaluated against the current host). Read-only. `--active-only` filters to
+  stores whose `when` matches this host. `--json` emits the same `ExplainData`
+  shape embedded in the composite `apply --json` envelope.
+- `stitch why <target>` — investigate a single target path in one call: what
+  store owns it, its source, link state, and owning config. Replaces the
+  `list` + `status` + `doctor` cross-reference an agent needed to investigate
+  a broken dotfile. Handles whole-dir containment (a path *inside* a whole-dir
+  store's target, reported with `matched_subpath`) and skipped-platform stores
+  (`skipped_platform: true` when the path is under a store whose `when` doesn't
+  match this host).
+- `stitch log` — show the audit log of mutating operations
+  (`.stitch/log.jsonl`). Append-only JSONL, one line per mutating op
+  (`apply`, `add`, `remove`, `migrate`, `import`, `prune --yes`), recording
+  command, timestamp, outcome, and exit class/code. `--limit N` reads the tail.
+  A log write failure is a warning, not a hard error — the log never blocks a
+  mutation. The log is visible and documented (not hidden state); `stitch log`
+  is the only reader.
+- `stitch schema` — emit the canonical agent JSON schema
+  (`docs/agent-schema.json`), embedded at compile time so the binary is
+  self-describing without a filesystem read. Describes the envelope, every
+  per-command `data` shape, the `error` shape, `recoverable_via` kinds, plan-op
+  shapes, and the exit-code table. `--json` wraps it in the standard envelope;
+  text mode pretty-prints the schema document. No repo required.
+- `stitch add <path> [path...]` — bulk add mode. Multiple positional paths each
+  get a simple store (default name derivation, no per-store flags). All paths
+  are validated first (dry-run), then applied; duplicate derived store names
+  are detected before any mutation. `--json` emits `BulkAddData` with per-path
+  results (`results[]`, `all_ok`).
+- `recoverable_via` — machine-readable recovery actions in the `--json` error
+  envelope, so an agent can branch without parsing the prose `hint`. Kinds:
+  `force-apply`, `adopt`, `edit-template`, `list`, `init`, `migrate`, `replan`,
+  `apply`, `manual`, `set-env`. Foreign-symlink conflicts are always `manual`
+  (red line: never auto-clobbered).
+- Composite `apply --json` — `apply --json` now returns `desired` (the
+  host-evaluated merge, same shape as `explain --json`), `plan` (the existing
+  `Plan` shape, unchanged), `result` (per-op execution outcome, `null` on
+  `--dry-run`), and `post_status` (`StatusRow[]` computed after execution).
+  `--only <store>` filters all four fields. `diff --json` and `plan --json`
+  are unchanged. `apply --plan --json` still emits `PlanExecReport`.
+- Audit log — every mutating operation (`apply`, `add`, `remove`, `migrate`,
+  `import`, `prune --yes`) appends to `.stitch/log.jsonl`. The log is
+  symlink-hardened: a symlinked `.stitch` or `log.jsonl` is refused, and the
+  final open uses `O_NOFOLLOW` so a same-UID swap-to-symlink between the
+  metadata check and the open gets `ELOOP`, not a redirected write.
+
+### Changed
+
+- `stitch status` states now include `foreign`, `store-error`, and
+  `config-error` (previously `linked`, `missing`, `conflict`, `broken`). The
+  JSON `StatusRow.resolves_to` field is populated for the new states. This
+  aligns `status` with the states `why` and the linker already report.
+
+## 0.12.0 — 2026-08-14
+
+### Fixed
+
+- `import`: stow-style fan-in (one store's file links spanning several target
+  parents) is no longer silently dropped. The store is now imported as a
+  multi-target store — one named target per parent (`target-1`, `target-2`, …,
+  with a `-N` collision suffix, matching `migrate`'s fallback), each carrying
+  its own file set. Parents that overlap (one nested under the other) are still
+  emitted; `apply`'s overlap validation then rejects them with a clear error
+  instead of `import` skipping the whole store with a warning. The `import`
+  JSON envelope gains a per-store `targets` array for multi-target imports.
+- `apply`: the file-mode stale-link sweep (`reconcile_store_links`) no longer
+  descends into the repository. A file-mode store with `target = "~"` (the
+  stow-mirror layout) walks all of `$HOME`; when the repo lives under `~`, the
+  sweep used to enter the repo and `remove_link` repo-internal organizational
+  symlinks that resolved into their own store dir. The sweep now prunes the
+  repo subtree (canonicalizing the walk root so the prefix check stays exact
+  with a symlinked `$HOME`), and only when the target is outside the repo — a
+  target inside the repo is still walked as the target's own subtree.
+
+## 0.11.6 — 2026-08-14
+
+### Fixed
+
+- `apply`/`diff`: collision errors now use a dedicated `ConfigError::Conflict`
+  variant with a targeted hint ("edit stitch.toml to give each store a distinct
+  target, or gate them with mutually-exclusive `when` clauses") instead of the
+  irrelevant path-validation hint. Nested-path collisions (e.g. a whole-dir
+  store targeting `~/.config` and a file-mode store linking into
+  `~/.config/nvim`) now produce a message naming both paths — "store A claims
+  link path X and store B claims nested link path Y" — instead of always
+  showing only the parent path.
+- `add`: setgid on adopted directories is now preserved. Previously
+  `strip_privileged_bits` stripped all three privileged bits (setuid, setgid,
+  sticky) from both files and directories; setgid on directories is a
+  legitimate configuration (new files inherit the directory's group) and git
+  preserves it via `core.sharedRepository`. Only setuid and sticky are stripped
+  from directories; files still strip all three.
+- `linker`: stow-style relative symlinks (`../../repo/store/alias`) that use
+  `..` to climb out of the link's parent directory are now recognized as
+  `Linked` instead of false-negative `Broken`. A new `link_ancestors_within_repo`
+  guard resolves the link's parent component-by-component (following symlinks,
+  applying `..`) and checks the resolved result against the repo root, rather
+  than rejecting any `..` in the readlink text lexically. An absolute link
+  containing `..` is still rejected. The ancestor guard still rejects relative
+  links whose `..` traversal escapes the repo.
+- `render`: stale-link reconciliation (`reconcile_store_links`) now skips
+  unreadable subtrees (`PermissionDenied` / `NotFound`) during the target walk
+  instead of failing. A file-mode store with `target = "~"` (the stow-mirror
+  layout) walks all of `$HOME`, which contains foreign root-owned trees
+  (podman overlays, etc.) that yield `PermissionDenied` to a same-UID process.
+  An unreadable subtree holds no stale link for this store, and `remove_link`
+  revalidates ownership before unlinking, so skipping cannot clobber a foreign
+  link. Errors at the scan root and other walk failures still surface.
+
+## 0.11.5 — 2026-08-14
+
+### Fixed
+
+- `apply`/`diff`: reject two active stores claiming the same link path
+  (e.g. two whole-dir stores on the same target, or a whole-dir store
+  overlapping a file-mode child). Previously `apply` would report success
+  while the filesystem never converged and `diff --exit-code` alarmed
+  forever. The collision is now detected up front as a config error (exit 3)
+  naming both stores and the conflicting path. File-mode stores sharing a
+  target directory with disjoint files remain valid; mutually exclusive
+  `when` clauses and platform-skipped stores are not treated as collisions.
+  (v0.11.4 release assessment blocker.)
+- `apply`: replace a stale repo-owned symlink atomically (create new link
+  at a temp path, then `rename` over the old one). A failure during link
+  creation no longer leaves the target absent — the original symlink
+  survives. (v0.11.4 release assessment "failed apply deletes a dangling
+  link".)
+- `apply`: an orphaned store (behavior in `stitch.toml` but no link
+  inventory in `state.toml`, e.g. left behind by `remove`) now surfaces as
+  a config error (exit 3) with a fix hint, instead of an internal error
+  (exit 1).
+- `add`: strip setuid/setgid/sticky bits when adopting a file into the
+  repo. `rename(2)` preserves mode bits, but a setuid dotfile is almost
+  always unintentional and git drops these bits on clone anyway. For
+  directories, only setuid and sticky are stripped — setgid on directories
+  is a legitimate configuration (new files inherit the directory's group)
+  and git preserves it via `core.sharedRepository`. A warning is printed
+  when bits are stripped.
+- `add`: `add <repo>` (adding the repository itself) now fails with a
+  clear "cannot add the repository itself" message instead of a generic
+  "inside the stitch repository" message.
+- `diff`: a read-only `diff` that reports conflicts no longer prints
+  "apply failed" — the error message now says "diff reported N
+  conflict(s), N error(s)". The `Apply` error variant's display no longer
+  hardcodes the "apply failed" prefix; callers pass the command name.
+
+### Documentation
+
+- README and SPEC: document that `remove` leaves the store directory in
+  the repo untouched, so re-`add`ing the same store requires renaming or
+  `rm -rf`-ing the leftover directory first (`add` refuses to adopt into
+  an existing store directory).
+
+## 0.11.4 — 2026-08-14
+
+### Fixed
+
+- `apply`: suppress pre/post hooks for stores skipped by `when`
+  clauses. Previously a skipped store could still trigger its hooks.
+
+### Internal
+
+- Module refactor: split `main.rs` (5,222 lines), `store.rs`
+  (3,827), `config.rs` (2,795), and `plan_exec.rs` (3,632) into
+  smaller modules. No behavior or public API change. Full plan in
+  `docs/plans/2026-08-13-module-refactor.md`.
+- Tests: added characterization tests for `add` rollback paths
+  before the refactor.
+
+## 0.11.3 — 2026-08-13
+
+### Fixed
+
+- Tests: fix `prop_source_ancestors_within_direct_child` collision when
+  `repo_name` equals `ext` by using a non-colliding external parent.
+
+## 0.11.2 — 2026-08-13
+
+### Fixed
+
+- Tests: make `matrix_home_*` hook tests robust against inode reuse (use
+  `mv`+`mkdir` instead of `rm -rf`+`mkdir`). Fixes flaky CI failure on
+  filesystems that quickly recycle inode numbers.
+
+## 0.11.1 — 2026-08-13
+
+### Fixed
+
+- CI: pin actions to valid SHAs (`actions/checkout`, `dtolnay/rust-toolchain`,
+  `Swatinem/rust-cache`) and make inode-identity tests robust against
+  filesystem inode reuse (rename-based replacement).
+
+## 0.11.0 — 2026-08-13
+
+### Added
+
+- `stitch add <missing-path> --file` creates an empty regular file-backed store.
+- `stitch add <existing-file> --to <store>` adopts one regular file into an
+  existing single-target file-mode store, preserving its contents and adding
+  the new path to generated state. Both forms support `--dry-run`.
+- Add validates repository boundaries and destination/target ancestors before
+  mutation, including in dry-run mode.
+
+### CI and testing
+
+- New `ci` workflow runs `cargo fmt`, `cargo clippy -D warnings`, and
+  `cargo test --locked --all-targets` on every push/PR with concurrency
+  control, timeout, pinned action SHAs, and `persist-credentials: false`.
+  Pinned toolchain via `rust-toolchain.toml` (1.97) and Dependabot for actions.
+- Property tests (proptest) for path normalization (`is_safe_fragment` /
+  `normalize_fragment`), config merging/hash, and ownership checks
+  (`points_into_repo`, `source_ancestors_within`, `link_name`). Fixes
+  tautological `prop_unsafe_rejected` and false-idempotent `prop_link_name_idempotent`.
+- Verify step now reuses single test log, uses `set -eo pipefail` +
+  `PIPESTATUS`, checks both `skipped under root` and `skipping: running as root`,
+  and ensures `cargo test --locked --all-targets` is exercised as non-root.
+
+## 0.10.0 — 2026-08-12
+
+### Added
+
+- `stitch diff --exit-code` provides a branchable convergence check: exit
+  0 means fully converged, exit 14 (`drift`) means safe changes are pending,
+  and conflicts/errors retain their existing codes. JSON output keeps the full
+  plan alongside the drift error. Platform-skipped stores do not count as drift.
+
+### Fixed
+
+- Authored config, generated state, and legacy config migration now reject
+  unknown keys at the root, store, target, and hook levels, so misspelled
+  safety-sensitive fields such as `ignore` or `pre` cannot be silently ignored.
+- Edited executable plans cannot remove staged output before every live stale
+  link that depends on it; omitted or reordered cleanup is rejected before
+  hooks or filesystem changes.
+- `diff` is now an exact mirror of `apply`: it reports removal of stale
+  rendered files and detects private-render drift (mode not `0600`, or more
+  than one hard link), matching what `apply` would replace. `doctor` inherits
+  the same mode/hard-link checks.
+
+## 0.9.0 — 2026-08-12
+
+### Trust and safety
+
+- **New `safety` module** defines the invariants every mutating command must
+  uphold, replacing one-path-at-a-time fixes that left adjacent paths uncovered:
+  - **`HomeIdentity`** pins `$HOME` as a location, not a live pathname. Both
+    the entry itself (lstat) and the directory it resolves to (stat) are
+    captured before any hook and revalidated after. A hook that replaces the
+    directory *behind* a symlinked `$HOME` — without changing the symlink — is
+    detected and rejected before any target mutation. Enforced in `apply`
+    (text and JSON), `remove`, and plan capture.
+  - **`InventoryCheck`** enforces inventory validity (symlinked source roots,
+    source-name collisions, unreadable store dirs, unsupported template
+    sources) for *all* stores regardless of platform match. "Skipped" changes
+    whether a command acts on a store, not whether it validates it: a
+    platform-skipped store with a symlinked source root or colliding sources
+    is still invalid and is no longer silently removed or state-dropped.
+- **Config revalidation now uses the fd-validated reader.** The apply path
+  replaced the path-based `compute_config_hash` with
+  `config::revalidate_config_hash`, which re-reads via the same no-follow,
+  fd-validated reader as `ConfigSnapshot::load`. A path replacement (symlink,
+  hard link, rename) targeting the config file between open and read can no
+  longer substitute bytes for the revalidation hash. A read failure is
+  surfaced as an explicit config error (exit 3) with path and checkpoint
+  context, not silently collapsed into "hash mismatch". Parent-directory
+  replacement remains within the documented same-user race boundary.
+- **`status`/`doctor`/`remove` surface store and config errors** via new
+  `LinkStatus::StoreError` and `LinkStatus::ConfigError` variants instead of
+  treating a bad source root or unresolvable config as a missing link.
+- **Link ownership check tightened in `check_link`:** the immediate link
+  target must be an in-repo path (the same `source_ancestors_within` guard
+  used by `points_at_source`); a link pointing directly at an external
+  endpoint is now foreign under the two-tier ownership rule.
+
+### Tests
+
+- ~2100 lines of new CLI integration tests covering `$HOME` identity
+  replacement, inventory validation for platform-skipped stores, the
+  fd-validated revalidation parse-then-restore TOCTOU (deterministic test
+  seam in `cmd_apply`, covering both text and JSON paths), and the new
+  `status` error variants.
+
+## 0.8.0 — 2026-08-11
+
+### Trust and safety
+
+- Plan schema 2 rejects schema-1 plans, attributes stale removals to their
+  originating store, revalidates target ancestors after hooks, and requires
+  execution-time `--force` for backup operations. `plan --only` limits capture
+  but is not authenticated in editable JSON; execution validates every listed
+  operation against a fresh normal apply plan.
+- Symlink ownership now resolves gateway chains with POSIX-correct `..`
+  semantics. Broad repo/store ownership remains canonical, while the narrow
+  external source-symlink exception matches only the exact configured entry.
+- Link creation rejects source paths that escape through a store ancestor;
+  target mutations reject ancestors resolving into the repository.
+- Render staging uses private, unpredictable exclusive temporary files,
+  refuses symlink/non-directory ancestors and non-regular leaves, and never
+  chmods a hard-linked staged inode. Direct dry-runs enforce the same
+  `.gitignore` staging prerequisite as real apply.
+- Store names, file fragments, glob patterns, and ignore patterns are validated
+  and normalized in memory without rewriting authored configuration.
+- Hidden quarantine artifacts were deliberately rejected: successful removal
+  does not retain live links or old rendered secret material.
+
+### Breaking changes
+
+- Executable plan schema is now 2; existing plans must be recaptured.
+- Store names `.git`, `.stitch`, nested paths, and `.`/`..` are invalid.
+- Configured targets must expand to absolute paths; `stitch add` resolves a
+  relative CLI path before persisting it.
+- Overlapping ancestor/descendant targets within one store are rejected because
+  independent reconciliation cannot safely determine ownership.
+- Template sources must be direct regular files, not symlinks, FIFOs, devices,
+  or directories.
+- The global `post-apply` hook no longer runs when the plan reports conflicts
+  or errors. It previously ran first even after a partial apply; per-store
+  post hooks still run for every attempted store, so cleanup for partial
+  applies belongs there rather than in the global hook.
+
+## 0.7.1 — 2026-08-07
+
+### Trust & safety
+
+Closes all seven remaining items from the 2026-06 trust review. Each
+upholds the core contract: never surprise the user with data movement,
+exposure, or silent replacement.
+
+- **P0 — nested ignore promotion no longer writes through foreign parent
+  symlinks.** A `foreign_ancestor` guard in `apply_file_entry` rejects
+  nested link creation when a parent symlink resolves outside the repo,
+  for both dry-run and real operations.
+- **P1 — `edit` rejects path traversal.** `match_target_to_source`
+  validates relative target fragments with `is_safe_fragment`, rejecting
+  `.` and `..` components before joining onto the store directory.
+- **P1 — `apply --plan` rejects parent symlinks that resolve into the
+  repo.** `resolved_target_points_into_repo` in `plan_exec` blocks
+  executable plans from clobbering repository content through symlinked
+  parents, closing the TOCTOU gap from the P0 fix.
+- **P1 — ignore promotion preserves source symlinks.** `resolve_files`
+  now accepts `is_symlink()` entries, and `create_link_to_entry` links
+  to the source symlink path without canonicalizing — so relative,
+  absolute, and dangling symlinks match whole-dir behavior after
+  promotion to file mode.
+- **P1 — `doctor` allows mutually-exclusive `when` targets sharing a
+  path.** `WhenClause::are_compatible` makes duplicate-target detection
+  `when`-aware, matching SPEC's documented laptop/server multi-target
+  layout. Genuine duplicates (compatible or absent `when`) are still
+  reported.
+- **P2 — init/migrate overwrite guards detect dangling symlinks.** The
+  refuse-existing-path guards now use `symlink_metadata` instead of
+  `Path::exists`, so a dangling `state.toml`/`stitch.toml`/`.bak`
+  symlink is refused rather than silently replaced by a regular file.
+- **P2 — `migrate` validates the split state before writing.** A v0.2
+  entry the new validator rejects (e.g. `files = ["./bashrc"]`) now
+  fails fast before any file is written or the legacy config is backed
+  up, instead of stranding the user with unloadable state.
+
+All changes are covered by unit + integration tests. `cargo fmt`,
+`cargo clippy -D warnings`, and the full suite (91 unit + 213 CLI) are
+clean.
+
+## 0.7.0 — 2026-08-06
+
+### Features
+
+- **Typed error taxonomy** (`StitchError` / `FailureClass`): 14 stable exit
+  codes (0–13) with class names, messages, and resolution hints. Text mode
+  prints `hint:` lines; `--json` envelopes include `class`, `code`, `message`,
+  `hint`, and `details`.
+- **JSON envelope** with a stable `schema: 1`. Global `--json` flag on
+  `status`, `list`, `doctor`, `prune`, `render`, `apply`, `diff`, and `plan`.
+  The envelope (including `error`) goes to stdout; the exit code stays honest;
+  stderr is reserved for hook/subprocess output.
+- **`stitch render <store>/<file>`**: read-only in-memory template render to
+  stdout; `--json` emits `{source, link_name, sha256, content}`.
+- **`stitch plan`**: capture `apply`'s exact op list as a `stitch/plan` JSON
+  file. Includes staged-render hashes, config hash, and platform fingerprint.
+  Text mode emits the raw plan; `--json` wraps it in the envelope.
+- **`stitch apply --plan <file>`**: verbatim plan execution with preflight +
+  per-op precondition re-checks + stale-plan detection. Aborts at the first
+  failed op. `--dry-run` runs validation with no mutations. `--plan` is
+  incompatible with `--only` and `--force` (usage error, exit 2).
+
+### Trust & safety
+
+- **Plan files are untrusted input.** `apply --plan` validates every op
+  against the pinned config: path traversal rejection, backup path validation
+  (same directory as target), source under repo, target under configured
+  target, and `.stitch/render/` gitignore guard.
+- **No plaintext in plans.** `stage_render` ops pin only the SHA-256 of the
+  approved render; rendered content is not stored in the plan.
+- **Stale-plan refusal.** Config edits, `state.toml` edits, platform drift, or
+  render-hash drift cause `apply --plan` to exit 12 before any mutation.
+- **Honest exit codes for agents.** `diff`/`plan` exit with the conflict/error
+  class; `apply` aggregates per-entry classes (single → that code, multiple →
+  11); `doctor` exits 13 on error-level findings.
+
+### Internals
+
+- **Refactored `compute_plan`**. `apply`, `diff`, `plan`, and the JSON/text
+  renderers all consume the same `Plan` struct, so the two views cannot drift.
+- **New dependencies:** `serde_json`, `sha2`.
+
+## 0.6.0 — 2026-08-03
+
+### Features
+
+- **Templates.** Files ending in `.tmpl` are rendered with minijinja and
+  symlinked from `.stitch/render/<store>/...` (inside the repo, so
+  `points_into_repo` / `remove` / `prune` keep working). Context:
+  `{{ hostname }}`, `{{ os }}`, `{{ arch }}`, `{{ distro }}`, `{{ shell }}`,
+  `{{ vars.key }}`, `{{ env("VAR") }}` (hard-fail) / `{{ env("VAR", "default") }}`.
+  Whole-dir stores containing any `.tmpl` promote to per-file links. State
+  records source names; `resolve_entry` strips the suffix for the link target.
+- **Trust foundation for staging.** `init` appends `.stitch/render/` to
+  `.gitignore` and creates the staging root at `0700`; renders are `0600`.
+  `doctor` errors if the gitignore entry is missing. Rendering is in-memory
+  only (no tempfile under a default umask).
+- **`diff` content dimension** for templated entries: fresh render vs staged.
+  Staging is hash-gated (preserves mtime) and reconciled on `apply`/`remove`.
+  `apply` also removes stale stitch-owned file-mode links when a source is
+  deleted or renamed; foreign symlinks remain untouched.
+- **`stitch edit <entry>`** opens a store or target's repo source (the `.tmpl`
+  when present) — never the staged render. Config-based; works pre-apply.
+- **`stitch import`** scans for existing repo-pointing symlinks and registers
+  them in `state.toml` (shares `scan.rs` with `prune`).
+
+## 0.5.0 — 2026-06-28
+
+### Features
+
+- **Run `stitch` from outside the repo.** A global `--repo <path>` flag and
+  `STITCH_REPO` env var let you operate on a repo without `cd`-ing into it.
+  Precedence: `--repo` > `STITCH_REPO` > upward cwd walk (unchanged default).
+  An override must point at a directory containing `.stitch/` — a typo is
+  rejected, not silently applied to the wrong directory. `init` is cwd-anchored
+  and ignores both (it creates a new repo in the current directory).
+
+## 0.4.1 — 2026-06-28
+
+### Fixes
+
+- **`stitch add` with a trailing slash now works.** `stitch add ~/.config/alacritty/`
+  used to fail at the link step with a confusing rollback error. Root cause:
+  `symlink(2)` rejects a linkpath with a trailing slash (the kernel treats it as
+  "must resolve to an existing directory", but the path doesn't exist yet when
+  we're creating the symlink). `expand_home` now strips trailing slashes from
+  its result, fixing the issue for every caller (`add`, `apply`, `scan`,
+  config load). Root (`/`) is preserved.
+
+## 0.4.0 — 2026-06-28
+
+### BREAKING — `adopt` merged into `add`
+
+`stitch adopt` is removed. `stitch add` now does both jobs based on whether the
+path exists:
+
+| Old | New |
+|---|---|
+| `stitch adopt <path>` | `stitch add <path>` (path exists → move into repo + link back) |
+| `stitch add <name> [target]` | `stitch add <path>` (path missing → create empty store + link) |
+
+**Why:** the old split had two commands with different signatures, different
+name-derivation rules, and a footgun — `stitch add ~/.shrc` silently created a
+store named `~/.shrc` with no target, a literal `~` directory in the repo, and
+linked nothing. One command with one rule (path is the positional, name derived
+from basename) eliminates the ambiguity.
+
+**Migration:** replace `stitch adopt <path>` with `stitch add <path>`. Replace
+`stitch add <name> <target>` with `stitch add <target> [--name <name>]`. The
+no-target form (`stitch add <name>`) is gone — it created a dead-end store with
+no link; use `stitch add <target>` instead.
+
+**New error:** `--files`/`--patterns` on an existing path now errors (the moved
+content determines the store layout; they were silently ignored before).
+
+### Features
+
+- `stitch add --dry-run` — preview both adopt-existing and create-empty paths.
+
+## 0.3.1 — 2026-06-18
+
+### Features
+
+- **`stitch prune` (alias `gc`)** — find symlinks pointing into the repo that
+  no store references, and remove them. Closes the last v0.3 checkbox
+  (orphaned-link detection). Non-destructive by default: lists only; `--yes`
+  removes, `--dry-run` is an explicit alias for the default. Removal routes
+  through the `points_into_repo`-guarded `remove_link`, so foreign symlinks are
+  never touched and a link repointed between scan and unlink is skipped.
+- **`src/scan.rs`** — shared filesystem scanner. By default walks `~`
+  *shallowly* (top-level dotfiles only — `~/.bashrc`, `~/.gitconfig`, …) so a
+  bare `prune` never descends into `~/.cache`, `node_modules`, or other slow
+  `$HOME` trees, plus `~/.config` and `~/.local/share` at full depth; an
+  explicit `--scan-dir` is always full depth. Scan dirs are a parameter, not
+  hardwired to `$HOME`, so the scanner is testable. Platform-gated: a store
+  skipped on this host doesn't own its target, so a stray link there counts as
+  an orphan. Foundation for the planned `import` command.
+
+### Trust & safety
+
+- **Honest exit codes.** `prune --yes` returns non-zero if any link could not
+  be removed (a permissions error, or a link repointed between scan and unlink).
+  A scripted `stitch prune --yes && …` won't sail past failures.
+
+### Design note
+
+`doctor` deliberately stays a fast, repo-local health check — the home-dir scan
+lives in `prune` only. Scanning `$HOME` on every `doctor` run would be slow and
+surprising, and would force every `doctor` test to override `$HOME`. This is an
+intentional deviation from the original v0.3 plan (which sketched orphan-link
+detection as a `doctor` check); see `docs/plans/v0.3-config-state-split.md`.
+
+### Testing
+
+150 tests (58 unit + 92 CLI), all passing. New coverage: 9 scanner unit tests
+(repo-pointing, foreign, missing-scan-dir, repo-pruning, covered-vs-orphan,
+platform-skipped target, max-depth cap, dangling repo-pointing link,
+file-mode target coverage) + 8 `prune` CLI tests (default lists, `--yes`
+removes only the orphan, `--dry-run`, `--yes --dry-run` still lists, foreign
+ignored, no-orphans, `gc` alias, non-zero exit on removal failure). `cargo fmt`
+and `cargo clippy -D warnings` clean.
+
+## 0.3.0 — 2026-06-18
+
+### BREAKING — config/state split
+
+Human-authored config and tool-generated desired state are now separate files.
+**v0.2 repos must run `stitch migrate` once.**
+
+- **`stitch.toml`** (repo root, authored) — `vars`, `when`, `hooks`, `ignore`.
+  Written once by `init`; thereafter the tool **never rewrites it**. Your
+  comments and formatting survive every mutation.
+- **`.stitch/state.toml`** (hidden, generated) — `target`, `files`, `patterns`.
+  The only file `add`/`adopt`/`remove` touch. May be hand-edited, but the tool
+  reserializes it on the next mutation (sorted, with a tool-owned header).
+
+**Motivation:** v0.2 kept everything in one `.stitch/config.toml` and
+reserialized it via `to_string_pretty` on every mutation, silently destroying
+comments and hand-formatting. The split ends that — the motivating bug is not
+fixable inside the single-file model.
+
+**Migration:** `stitch migrate` splits a v0.2 `.stitch/config.toml` in place,
+writing `stitch.toml` + `.stitch/state.toml` and preserving the original as
+`.stitch/config.toml.bak`. Migration is **comment-lossy by design** (a
+structural one-shot conversion): v0.2 comments decorate a single-file layout
+that no longer exists, so there is no faithful place to carry them. The `.bak`
+is the recovery path; the conversion prints a note so the loss is not a
+surprise.
+
+### Features
+
+- `stitch migrate` — one-shot, deterministic v0.2 → v0.3 split. `--dry-run`
+  previews the planned files without writing.
+- Multi-target entries are now **name-keyed** (the cross-file join key), so two
+  targets can share a path (e.g. the same `~/.config/helix` on different
+  hostnames). `list` prints `name → target` for multi-target stores.
+- `doctor` flags **orphaned behavior**: a store declared in `stitch.toml` with
+  no `state.toml` entry (e.g. deliberately left behind by `remove`, which never
+  rewrites the authored file).
+- `state.toml` ordering is **deterministic** (sorted maps + sorted
+  `files`/`patterns`) for stable git diffs across invocations.
+
+### Trust & safety
+
+- **Authored config is read-only to the tool.** After `init`, stitch never
+  rewrites `stitch.toml` — mutations touch `.stitch/state.toml` only.
+- **v0.2 repos are rejected with an actionable error** pointing at `migrate`,
+  not silently read in a dual-format mode.
+
+### Testing
+
+132 tests (49 unit + 83 CLI), all passing. New regression coverage:
+comment-preservation across mutations, v0.2 rejection, stale-config warning,
+authored-only-target load-and-skip, `state.toml` ordering stability, and a
+migrate golden-file roundtrip. `cargo fmt` and `cargo clippy -D warnings` clean.
+
+## 0.2.0 — 2026-06-17
+
+First trust-worthy release. All P0/P1/P2 issues from the 2026-06 trust review
+resolved. Oracle #2 re-review confirmed: "would personally use for real Linux
+dotfiles now."
+
+### Trust & safety
+
+- **No external uploads.** Old gist/snapshot machinery removed. No network calls
+  in any command.
+- **Foreign symlinks are always conflicts.** Symlinks not pointing into the
+  stitch repo are never silently clobbered — even under `--force`.
+- **`apply --force` creates `.bak` backups.** Real file/dir conflicts are renamed
+  to `{target}.bak` before linking. Refuses to overwrite an existing `.bak`.
+- **`adopt` is atomic.** Pre-checks collisions, moves files into the repo, links
+  back, and rolls back on any failure.
+- **`add` is atomic.** Applies in-memory before persisting config; rolls back on
+  conflict or config-save failure.
+- **Path traversal validated.** Absolute and `..`-containing file/pattern entries
+  are rejected at config load and CLI input.
+- **Honest exit codes.** `apply`, `adopt`, `add`, `doctor`, `diff`, `status` all
+  return non-zero on errors, conflicts, or unknown store names.
+- **Atomic config writes.** `Config::save()` writes to temp file then `rename(2)`
+  — no truncation/corruption window.
+- **Symlink ownership hardening.** `points_into_repo()` normalizes `..` components
+  before checking whether a symlink belongs to this repo.
+
+### Features
+
+- `init`, `apply`, `status`, `diff`, `list`, `doctor`
+- `adopt`, `add`, `remove`, `edit`
+- Whole-directory and file mode (with recursive glob via `walkdir`)
+- Platform conditionals (`when`: os, arch, distro, hostname, shell)
+- Multi-target stores
+- Per-store hooks (`pre`/`post`) + global `.stitch/hooks/` executables
+- Global ignores (`.git`, `.stitch`, `.gitignore`, `.DS_Store`) + per-store
+  ignore patterns with directory exclusion
+- Whole-dir → file-mode promotion when ignored content exists in the store
+
+### Testing
+
+106 tests (36 unit + 70 CLI), all passing. `cargo fmt` and `cargo clippy -D
+warnings` clean.
+
+## 0.1.0 — 2026-06-15
+
+Initial release. Core symlink engine, config parsing, basic commands.

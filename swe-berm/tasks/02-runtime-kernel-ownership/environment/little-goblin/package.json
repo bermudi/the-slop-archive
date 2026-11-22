@@ -1,0 +1,41 @@
+{
+  "name": "little-goblin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram-native personal AI goblin. Single user, single process, homelab.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch run src/index.ts",
+    "onboard": "bun run src/onboard.ts",
+    "validate-config": "bun run src/validate-config.ts",
+    "install:prod": "bash scripts/install.sh",
+    "install-service": "bash scripts/install-service.sh",
+    "update:prod": "bash scripts/update.sh",
+    "migrate": "bun run src/migrate.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "e2e:smoke": "cd e2e && go run .",
+    "e2e:test": "cd e2e && go test ./..."
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.1.0",
+    "@earendil-works/pi-coding-agent": "0.80.10",
+    "@grammyjs/types": "^3.28.0",
+    "@sinclair/typebox": "^0.34.49",
+    "ai": "^6.0.183",
+    "grammy": "^1.44.0",
+    "json5": "^2.2.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/json5": "^2.2.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}
